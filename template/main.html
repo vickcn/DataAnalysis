@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Scientific Data Lab · Main</title>
+
+  <link rel="stylesheet" href="app.css" />
+  <!-- Plotly：2D/3D 散點 + hover + click 互動 -->
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+</head>
+
+<body class="app">
+  <div class="topbar">
+    <div class="topbar-left">
+      <a class="topbar-brand" href="index.html">
+        <span class="logo-dot"></span>
+        <span>Scientific Data Lab</span>
+      </a>
+      <span class="topbar-sep"></span>
+
+      <label class="mini">
+        API Base
+        <input id="apiBase" class="input mono" placeholder="http://10.1.3.127:6030" />
+      </label>
+
+      <button class="btn small" id="btnSaveApi">儲存</button>
+      <button class="btn small ghost" id="btnPing">Ping</button>
+      <span id="apiStatus" class="status-dot" title="API status"></span>
+    </div>
+
+    <div class="topbar-right">
+      <div class="kbd mono small">⌘/Ctrl + K：快速搜尋欄位</div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">資料來源</div>
+
+        <div class="field">
+          <div class="label">瀏覽（僅 source_disk 底下）</div>
+          <div class="row">
+            <select id="fileSelect" class="input"></select>
+            <button class="btn ghost" id="btnRefreshFiles" title="刷新檔案列表">刷新</button>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="browsePath" class="input mono" placeholder="目前目錄" spellcheck="false" title="可手動輸入路徑，按 Enter 切換" />
+            <button class="btn ghost" id="btnUpDir">上層</button>
+            <button class="btn ghost" id="btnBrowse">瀏覽</button>
+          </div>
+          <div class="hint mono small">
+            來自後端 <span class="pill mono">/files</span>（source_disk / directory）
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="label">Sheet（xlsx）</div>
+          <input id="sheetInput" class="input mono" type="number" value="0" min="0" />
+        </div>
+
+        <div class="field">
+          <button class="btn primary" id="btnPreview">讀取欄位/預覽</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="panel-title">欄位挑選（Smart Picker）</div>
+
+        <div class="field">
+          <div class="label">快速搜尋</div>
+          <input id="colSearch" class="input mono" placeholder="輸入欄位名（支援模糊/前綴）" />
+          <div class="hint mono small">
+            會根據 dtype / unique / null 等資訊做排序與建議
+          </div>
+        </div>
+
+        <div class="field grid2">
+          <div>
+            <div class="label">X（單一）</div>
+            <div id="xSingle" class="picker"></div>
+          </div>
+          <div>
+            <div class="label">Y</div>
+            <div id="ySingle" class="picker"></div>
+          </div>
+        </div>
+
+        <div class="field grid2">
+          <div>
+            <div class="label">X1（雙X）</div>
+            <div id="x1Dual" class="picker"></div>
+          </div>
+          <div>
+            <div class="label">X2（雙X）</div>
+            <div id="x2Dual" class="picker"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="label">固定值（可選）</div>
+          <textarea id="fixedJson" class="input mono" rows="4" placeholder='例如：{"LOT":"A12","Machine":"M3"}'></textarea>
+          <div class="hint mono small">
+            會傳到後端分析端點的 <span class="pill mono">fixed_values</span>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="panel-title">分析</div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="tabMic">MIC 相關性</button>
+          <button class="tab" data-tab="tabXY">X–Y / 3D</button>
+        </div>
+
+        <div id="tabMic" class="tabpane active">
+          <div class="field">
+            <div class="label">MIC 分析欄位範圍</div>
+            <select id="micMode" class="input">
+              <option value="auto">Auto（建議欄位）</option>
+              <option value="manual">Manual（自行勾選）</option>
+            </select>
+            <div class="hint mono small">
+              Auto 會優先挑「資訊量高」欄位（非空多、unique 適中、dtype 合理）
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="label">手動欄位（manual 時）</div>
+            <div id="micManualList" class="listbox"></div>
+          </div>
+
+          <div class="field">
+            <button class="btn primary" id="btnMic">計算 MIC（後端）</button>
+            <button class="btn ghost" id="btnMicPlot">繪製 MIC 圖（後端輸出）</button>
+          </div>
+        </div>
+
+        <div id="tabXY" class="tabpane">
+          <div class="field">
+            <div class="label">模式</div>
+            <select id="xyMode" class="input">
+              <option value="2d">2D：X vs Y</option>
+              <option value="3d">3D：X1 vs X2 vs Y</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <div class="label">抽樣（避免點數太多卡頓）</div>
+            <input id="sampleN" class="input mono" type="number" min="100" step="100" value="2000" />
+          </div>
+
+          <div class="field">
+            <button class="btn primary" id="btnFetchPoints">載入資料點並繪圖</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">執行紀錄</div>
+        <div id="log" class="log mono"></div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <div class="canvas-card">
+        <div class="canvas-head">
+          <div>
+            <div class="canvas-title">Interactive Scatter</div>
+            <div class="canvas-sub mono small" id="plotSubtitle">Hover 顯示資訊 · Click 顯示詳情</div>
+          </div>
+
+          <div class="canvas-actions">
+            <button class="btn ghost" id="btnResetView">Reset View</button>
+            <button class="btn ghost" id="btnExportPng">Export PNG</button>
+          </div>
+        </div>
+
+        <div id="plot" class="plot"></div>
+      </div>
+
+      <div class="detail-card" id="detailCard">
+        <div class="detail-head">
+          <div class="detail-title">Point Details</div>
+          <button class="icon-btn" id="btnCloseDetail" title="Close">✕</button>
+        </div>
+        <div id="detailBody" class="detail-body mono"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 快速欄位搜尋浮層 -->
+  <div class="overlay" id="overlay" aria-hidden="true">
+    <div class="overlay-card">
+      <div class="overlay-title">快速搜尋欄位</div>
+      <input id="quickSearch" class="input mono" placeholder="輸入欄位名…（Enter 套用到焦點 picker）" />
+      <div id="quickList" class="quicklist"></div>
+      <div class="hint mono small">
+        使用方式：點一下任一 picker（X/Y/X1/X2）讓它成為焦點 → Ctrl/⌘+K → 搜尋 → Enter/點選。
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=20260414a"></script>
+</body>
+</html>

@@ -1,0 +1,113 @@
+.hetero-layout{
+  grid-template-columns: 460px 1fr;
+}
+
+.hetero-main{
+  overflow:auto;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+
+.summary-grid{
+  display:grid;
+  grid-template-columns: 1.1fr .9fr;
+  gap:14px;
+}
+
+.mini-card{ min-height: 280px; }
+.result-card{ min-height: 220px; }
+.card-scroll{ padding: 14px; max-height: 280px; overflow:auto; }
+
+.grid3{ display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; }
+.grid4{ display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; }
+.check-row{ display:flex; gap:12px; flex-wrap:wrap; color:var(--muted); }
+.check-row label{ display:flex; align-items:center; gap:6px; }
+
+.metrics-grid{
+  display:grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap:10px;
+}
+.metric-box{
+  border:1px solid rgba(29,42,85,.75);
+  border-radius:14px;
+  padding:12px;
+  background: rgba(11,18,36,.35);
+}
+.metric-label{ color:var(--muted); font-size:12px; margin-bottom:8px; }
+.metric-value{ color:var(--text); font-size:13px; word-break:break-word; }
+
+.table-wrap{
+  padding: 12px;
+  overflow:auto;
+  max-height: 320px;
+}
+.table-wrap table{
+  width:100%;
+  border-collapse: collapse;
+  font-size:12px;
+}
+.table-wrap th,
+.table-wrap td{
+  border-bottom:1px solid rgba(29,42,85,.55);
+  padding:8px 10px;
+  text-align:left;
+  vertical-align:top;
+}
+.table-wrap th{
+  position: sticky;
+  top: 0;
+  background: rgba(7,10,16,.94);
+  color: var(--muted);
+}
+.table-wrap td{ color: var(--text); }
+.empty-hint{
+  display:grid;
+  place-items:center;
+  color:var(--faint);
+  min-height: 140px;
+}
+
+.json-view{
+  margin:0;
+  padding:14px;
+  min-height:220px;
+  max-height:420px;
+  overflow:auto;
+  white-space:pre-wrap;
+  word-break:break-word;
+  color: var(--text);
+}
+
+.paths-wrap{
+  padding: 12px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.path-item{
+  border:1px solid rgba(29,42,85,.75);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(11,18,36,.35);
+}
+.path-tag{
+  display:inline-block;
+  margin-bottom:6px;
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid rgba(102,227,255,.35);
+  color:var(--muted);
+  font-size:11px;
+}
+
+@media (max-width: 1280px){
+  .hetero-layout{ grid-template-columns: 1fr; }
+  .summary-grid{ grid-template-columns: 1fr; }
+  .grid4{ grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 720px){
+  .grid3,.grid4,.metrics-grid{ grid-template-columns: 1fr; }
+}

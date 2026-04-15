@@ -1,0 +1,62 @@
+# 数据文件
+**.pkl
+**.xlsx
+**.csv
+**demo
+**.txt
+**.yml
+**.bat
+**.lnk
+**.pyc
+**.jpg
+**.png
+**.gif
+**.ico
+**.jpeg
+**.webp
+**.svg
+**.ico
+**.bak
+**.code-workspace
+**copy*
+**test*
+**issues*/
+**old*/
+**old*
+!DejaVuSans-Bold.ttf
+!DejaVuSans-BoldOblique.ttf
+**.docx
+**.xlsx
+**.xlsm
+**heteroscedastic_frontend_pack**
+
+
+# 临时文件
+**.tmp
+**.temp
+**tmp*
+**Models\*
+jsonlog
+**log*
+
+# 日志文件
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE相关
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 虚拟环境
+venv/
+env/
+.env/ 
+
+Main_fastapi_naive.py
+app/
+.gitignore-*

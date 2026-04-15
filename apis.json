@@ -1,0 +1,592 @@
+{
+  "generated_at": "2026-04-14T16:14:35.752304",
+  "base_url": "http://10.1.3.127:7017",
+  "provider": "openai",
+  "model": "gpt35_chat",
+  "templates_dirs": [],
+  "input_files": [
+    "C:\\ML_HOME\\DataAnalysis\\api_server.py",
+    "C:\\ML_HOME\\DataAnalysis\\DataAnalysis.py",
+    "C:\\ML_HOME\\DataAnalysis\\mcp_server.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\__init__.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\algorithms.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\api_analysis.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\data_analysis.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\dataframeprocedure.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\distribution_test.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\EIMSDataProc.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\getRFC.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\GPUMemoryManage.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\kerasExplainer.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\LOGger.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\measureVariance.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\modeling.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\modeling_core.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\Py2modbus.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\visualization.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\visualization2.py",
+    "C:\\ML_HOME\\DataAnalysis\\package\\visualization3.py",
+    "C:\\ML_HOME\\DataAnalysis\\simple_test.py",
+    "C:\\ML_HOME\\DataAnalysis\\src\\__init__.py",
+    "C:\\ML_HOME\\DataAnalysis\\src\\analyze_engine.py",
+    "C:\\ML_HOME\\DataAnalysis\\src\\api_integration.py",
+    "C:\\ML_HOME\\DataAnalysis\\src\\discrete_aggregator.py",
+    "C:\\ML_HOME\\DataAnalysis\\src\\heteroscedastic.py",
+    "C:\\ML_HOME\\DataAnalysis\\src\\integration_example.py",
+    "C:\\ML_HOME\\DataAnalysis\\src\\multidim_instability.py",
+    "C:\\ML_HOME\\DataAnalysis\\src\\test_discrete_aggregator.py",
+    "C:\\ML_HOME\\DataAnalysis\\test_api.py",
+    "C:\\ML_HOME\\DataAnalysis\\test_drawcorrmap.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_ana\\test_evaluationFit.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_ana\\test_evaluationFitAnalysis.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_ana_api\\test_analyze_continuous_to_continuous_api.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_dppc\\debug.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_plc\\test_PlotCorrelation.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_plot2CtoY\\test_analyzeTwoContinuousToY.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_plot2CtoY\\test_analyzeTwoContinuousToY_remote.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_repmd\\evaluationToMarkdown.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_repmd\\test_EIMSLLM.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_ysta\\demo_sigma_density_shrink.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_ysta\\multidim_instability.py",
+    "C:\\ML_HOME\\DataAnalysis\\tmp_ysta\\test_heteroscedastic.py"
+  ],
+  "files": {
+    "C:\\ML_HOME\\DataAnalysis\\api_server.py": {
+      "path": "C:\\ML_HOME\\DataAnalysis\\api_server.py",
+      "endpoints": [
+        {
+          "function": "index_html",
+          "name": "index_html",
+          "signature": "async index_html()",
+          "methods": [
+            "GET"
+          ],
+          "path": "/index.html",
+          "full_path": "/index.html",
+          "router_name": "app",
+          "docstring": "返回首頁（動態注入配置）",
+          "summary": "此 API 端點用於返回首頁，並動態注入配置，根據 config.json 中的設定替換硬編碼的 API 地址。",
+          "error": null
+        },
+        {
+          "function": "main_html",
+          "name": "main_html",
+          "signature": "async main_html()",
+          "methods": [
+            "GET"
+          ],
+          "path": "/main.html",
+          "full_path": "/main.html",
+          "router_name": "app",
+          "docstring": "返回主介面頁面（動態注入配置）",
+          "summary": "此API端點用於返回主介面頁面，並動態注入配置，以替換硬編碼的API地址。",
+          "error": null
+        },
+        {
+          "function": "heteroscedastic_html",
+          "name": "heteroscedastic_html",
+          "signature": "async heteroscedastic_html()",
+          "methods": [
+            "GET"
+          ],
+          "path": "/heteroscedastic.html",
+          "full_path": "/heteroscedastic.html",
+          "router_name": "app",
+          "docstring": "返回不穩定度頁面（動態注入配置）",
+          "summary": "此API端點用於返回不穩定度頁面，並動態注入配置。",
+          "error": null
+        },
+        {
+          "function": "app_css",
+          "name": "app_css",
+          "signature": "async app_css()",
+          "methods": [
+            "GET"
+          ],
+          "path": "/app.css",
+          "full_path": "/app.css",
+          "router_name": "app",
+          "docstring": "返回 CSS 文件",
+          "summary": "此 API 端點用於返回 CSS 文件。",
+          "error": null
+        },
+        {
+          "function": "app_js",
+          "name": "app_js",
+          "signature": "async app_js()",
+          "methods": [
+            "GET"
+          ],
+          "path": "/app.js",
+          "full_path": "/app.js",
+          "router_name": "app",
+          "docstring": "返回 JavaScript 文件",
+          "summary": "此 API 端點用於返回 JavaScript 文件。",
+          "error": null
+        },
+        {
+          "function": "root",
+          "name": "root",
+          "signature": "async root()",
+          "methods": [
+            "GET"
+          ],
+          "path": "/",
+          "full_path": "/",
+          "router_name": "app",
+          "docstring": "根路由：返回 API 資訊或重定向到首頁",
+          "summary": "此 API 端點為根路由，可返回 API 資訊或重定向到首頁。",
+          "error": null
+        },
+        {
+          "function": "get_config",
+          "name": "get_config",
+          "signature": "async get_config()",
+          "methods": [
+            "GET"
+          ],
+          "path": "/config",
+          "full_path": "/config",
+          "router_name": "app",
+          "docstring": "取得服務配置資訊",
+          "summary": "此 API 端點用於取得服務配置資訊，包括主機 IP、主機埠、來源目錄、參考目錄和 GPU 記憶體限制。",
+          "error": null
+        },
+        {
+          "function": "list_files",
+          "name": "list_files",
+          "signature": "async list_files(directory=None)",
+          "methods": [
+            "GET"
+          ],
+          "path": "/files",
+          "full_path": "/files",
+          "router_name": "app",
+          "docstring": "列出 root（source_disk / source_dir）下指定目錄的檔案與子目錄（僅允許瀏覽 root 範圍）",
+          "summary": "列出指定目錄的檔案與子目錄，僅允許在根目錄範圍內瀏覽。",
+          "error": null
+        },
+        {
+          "function": "search_file",
+          "name": "search_file",
+          "signature": "async search_file(filename)",
+          "methods": [
+            "GET"
+          ],
+          "path": "/search-file",
+          "full_path": "/search-file",
+          "router_name": "app",
+          "docstring": "搜尋檔案在配置的目錄中",
+          "summary": "搜尋檔案在配置的目錄中，返回包含檔案資訊的結果。",
+          "error": null
+        },
+        {
+          "function": "plot_correlation",
+          "name": "plot_correlation",
+          "signature": "async plot_correlation(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/plot-correlation",
+          "full_path": "/plot-correlation",
+          "router_name": "app",
+          "docstring": "繪製相關性圖表",
+          "summary": "這個 API 端點的用途是繪製相關性圖表。",
+          "error": null
+        },
+        {
+          "function": "calculate_correlation",
+          "name": "calculate_correlation",
+          "signature": "async calculate_correlation(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/calculate-correlation",
+          "full_path": "/calculate-correlation",
+          "router_name": "app",
+          "docstring": "計算相關性",
+          "summary": "這個 API 端點的功能是計算相關性。",
+          "error": null
+        },
+        {
+          "function": "data_parsing",
+          "name": "data_parsing",
+          "signature": "async data_parsing(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/data-parsing",
+          "full_path": "/data-parsing",
+          "router_name": "app",
+          "docstring": "資料解析",
+          "summary": "這個 API 端點的用途是進行資料解析，接收 POST 請求，解析檔案中的資料後返回結果。",
+          "error": null
+        },
+        {
+          "function": "data_parsing_and_plot_correlation",
+          "name": "data_parsing_and_plot_correlation",
+          "signature": "async data_parsing_and_plot_correlation(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/dppc",
+          "full_path": "/dppc",
+          "router_name": "app",
+          "docstring": "資料解析並繪製相關性圖表",
+          "summary": "這個 API 端點的功能是進行資料解析並繪製相關性圖表。",
+          "error": null
+        },
+        {
+          "function": "analyze_continuous_to_continuous",
+          "name": "analyze_continuous_to_continuous",
+          "signature": "async analyze_continuous_to_continuous(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-continuous-to-continuous",
+          "full_path": "/analyze-continuous-to-continuous",
+          "router_name": "app",
+          "docstring": "連續變數對連續變數分析",
+          "summary": "這個 API 端點的用途是進行連續變數對連續變數的分析。",
+          "error": null
+        },
+        {
+          "function": "analyze_categorical_to_continuous",
+          "name": "analyze_categorical_to_continuous",
+          "signature": "async analyze_categorical_to_continuous(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-categorical-to-continuous",
+          "full_path": "/analyze-categorical-to-continuous",
+          "router_name": "app",
+          "docstring": "類別變數對連續變數分析",
+          "summary": "這個 API 端點的功能是進行類別變數對連續變數的分析。",
+          "error": null
+        },
+        {
+          "function": "analyze_continuous_to_categorical",
+          "name": "analyze_continuous_to_categorical",
+          "signature": "async analyze_continuous_to_categorical(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-continuous-to-categorical",
+          "full_path": "/analyze-continuous-to-categorical",
+          "router_name": "app",
+          "docstring": "連續變數對類別變數分析",
+          "summary": "這個 API 端點的功能是進行連續變數對類別變數的分析。",
+          "error": null
+        },
+        {
+          "function": "analyze_categorical_to_categorical",
+          "name": "analyze_categorical_to_categorical",
+          "signature": "async analyze_categorical_to_categorical(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-categorical-to-categorical",
+          "full_path": "/analyze-categorical-to-categorical",
+          "router_name": "app",
+          "docstring": "類別變數對類別變數分析",
+          "summary": "這個 API 端點的功能是進行類別變數對類別變數的分析。",
+          "error": null
+        },
+        {
+          "function": "analyze_continuous_to_continuous_via_api",
+          "name": "analyze_continuous_to_continuous_via_api",
+          "signature": "async analyze_continuous_to_continuous_via_api(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-continuous-to-continuous-via-api",
+          "full_path": "/analyze-continuous-to-continuous-via-api",
+          "router_name": "app",
+          "docstring": "連續變數對連續變數分析（API 版本）",
+          "summary": "這個 API 端點提供連續變數對連續變數的分析功能，使用 POST 方法，可透過指定的參數進行分析，並返回分析結果。",
+          "error": null
+        },
+        {
+          "function": "analyze_categorical_to_continuous_via_api",
+          "name": "analyze_categorical_to_continuous_via_api",
+          "signature": "async analyze_categorical_to_continuous_via_api(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-categorical-to-continuous-via-api",
+          "full_path": "/analyze-categorical-to-continuous-via-api",
+          "router_name": "app",
+          "docstring": "類別變數對連續變數分析（API 版本）",
+          "summary": "這個 API 端點的功能是進行類別變數對連續變數的分析，使用 POST 方法，接收分析請求並返回分析結果。",
+          "error": null
+        },
+        {
+          "function": "analyze_continuous_to_categorical_via_api",
+          "name": "analyze_continuous_to_categorical_via_api",
+          "signature": "async analyze_continuous_to_categorical_via_api(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-continuous-to-categorical-via-api",
+          "full_path": "/analyze-continuous-to-categorical-via-api",
+          "router_name": "app",
+          "docstring": "連續變數對類別變數分析（API 版本）",
+          "summary": "這個 API 端點提供連續變數對類別變數的分析功能，使用 POST 方法，可將資料進行分析後返回結果。",
+          "error": null
+        },
+        {
+          "function": "analyze_categorical_to_categorical_via_api",
+          "name": "analyze_categorical_to_categorical_via_api",
+          "signature": "async analyze_categorical_to_categorical_via_api(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-categorical-to-categorical-via-api",
+          "full_path": "/analyze-categorical-to-categorical-via-api",
+          "router_name": "app",
+          "docstring": "類別變數對類別變數分析（API 版本）",
+          "summary": "這個 API 端點的用途是進行類別變數對類別變數的分析，提供了一個 API 版本的功能。",
+          "error": null
+        },
+        {
+          "function": "two_dimension_analysis",
+          "name": "two_dimension_analysis",
+          "signature": "async two_dimension_analysis(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/two-dimension-analysis",
+          "full_path": "/two-dimension-analysis",
+          "router_name": "app",
+          "docstring": "二維度分析",
+          "summary": "這個 API 端點提供了一個進行二維度分析的功能，使用 POST 方法，接收相關數據後進行分析，並返回分析結果。",
+          "error": null
+        },
+        {
+          "function": "analyze_two_continuous_to_y",
+          "name": "analyze_two_continuous_to_y",
+          "signature": "async analyze_two_continuous_to_y(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-two-continuous-to-y",
+          "full_path": "/analyze-two-continuous-to-y",
+          "router_name": "app",
+          "docstring": "兩個連續變數對 Y 分析",
+          "summary": "這個 API 端點的功能是分析兩個連續變數對 Y 的影響。",
+          "error": null
+        },
+        {
+          "function": "analyze_mixed_to_y",
+          "name": "analyze_mixed_to_y",
+          "signature": "async analyze_mixed_to_y(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-mixed-to-y",
+          "full_path": "/analyze-mixed-to-y",
+          "router_name": "app",
+          "docstring": "混合變數對 Y 分析",
+          "summary": "這個 API 端點的用途是進行混合變數對 Y 的分析。",
+          "error": null
+        },
+        {
+          "function": "analyze_two_categorical_to_y",
+          "name": "analyze_two_categorical_to_y",
+          "signature": "async analyze_two_categorical_to_y(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-two-categorical-to-y",
+          "full_path": "/analyze-two-categorical-to-y",
+          "router_name": "app",
+          "docstring": "兩個類別變數對 Y 分析",
+          "summary": "這個 API 端點的功能是分析兩個類別變數對 Y 的影響。",
+          "error": null
+        },
+        {
+          "function": "analyze_two_continuous_to_y_via_api",
+          "name": "analyze_two_continuous_to_y_via_api",
+          "signature": "async analyze_two_continuous_to_y_via_api(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-two-continuous-to-y-via-api",
+          "full_path": "/analyze-two-continuous-to-y-via-api",
+          "router_name": "app",
+          "docstring": "兩個連續變數對 Y 分析（API 版本）",
+          "summary": "這個 API 端點提供了一個分析兩個連續變數對 Y 的功能，使用者可以透過此端點進行相關分析。",
+          "error": null
+        },
+        {
+          "function": "analyze_mixed_to_y_via_api",
+          "name": "analyze_mixed_to_y_via_api",
+          "signature": "async analyze_mixed_to_y_via_api(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-mixed-to-y-via-api",
+          "full_path": "/analyze-mixed-to-y-via-api",
+          "router_name": "app",
+          "docstring": "混合變數對 Y 分析（API 版本）",
+          "summary": "這個 API 端點提供混合變數對 Y 的分析功能，使用 POST 方法，可分析並返回結果。",
+          "error": null
+        },
+        {
+          "function": "analyze_two_categorical_to_y_via_api",
+          "name": "analyze_two_categorical_to_y_via_api",
+          "signature": "async analyze_two_categorical_to_y_via_api(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/analyze-two-categorical-to-y-via-api",
+          "full_path": "/analyze-two-categorical-to-y-via-api",
+          "router_name": "app",
+          "docstring": "兩個類別變數對 Y 分析（API 版本）",
+          "summary": "這個 API 端點的功能是分析兩個類別變數對 Y 的影響，提供了對應的 API 版本。",
+          "error": null
+        },
+        {
+          "function": "standard_tests",
+          "name": "standard_tests",
+          "signature": "async standard_tests(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/standard-tests",
+          "full_path": "/standard-tests",
+          "router_name": "app",
+          "docstring": "標準檢定分析",
+          "summary": "這個 API 端點提供標準檢定分析功能，接收 POST 請求並處理檢定分析任務，最後返回分析完成的訊息和結果資訊。",
+          "error": null
+        },
+        {
+          "function": "instability_compute",
+          "name": "instability_compute",
+          "signature": "async instability_compute(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/instability/compute",
+          "full_path": "/instability/compute",
+          "router_name": "app",
+          "docstring": "不穩定度計算，主體回 JSON（issues/不穩定度計算功能API化.iss）。\nTODO: 將 ret 與 heteroscedastic 參數（離散閾值、norm、tol、density_shrink 等）對齊。",
+          "summary": "此API端點用於計算不穩定度，接收POST請求並返回JSON格式的計算結果。",
+          "error": null
+        },
+        {
+          "function": "instability_save",
+          "name": "instability_save",
+          "signature": "async instability_save(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/instability/save",
+          "full_path": "/instability/save",
+          "router_name": "app",
+          "docstring": "不穩定度結果寫檔（與 compute / plot 分離）。",
+          "summary": "這個 API 端點的功能是將不穩定度結果寫入檔案，與計算和繪圖分開。",
+          "error": null
+        },
+        {
+          "function": "instability_plot",
+          "name": "instability_plot",
+          "signature": "async instability_plot(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/instability/plot",
+          "full_path": "/instability/plot",
+          "router_name": "app",
+          "docstring": "不穩定度繪圖（與 compute / save 分離）。",
+          "summary": "這個 API 端點用於進行不穩定度繪圖，將資料進行繪圖呈現不穩定度，並將結果輸出至指定目錄。",
+          "error": null
+        },
+        {
+          "function": "get_points",
+          "name": "get_points",
+          "signature": "async get_points(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/data/points",
+          "full_path": "/data/points",
+          "router_name": "app",
+          "docstring": "回傳前端繪圖用的資料點（2D/3D），支援：\n- 指定 columns（必要）\n- fixed_values 條件過濾（可選）\n- sample_n 抽樣（避免點太多）\n- include_extra_columns 額外欄位，供 hover/click 顯示更多特徵",
+          "summary": "此API端點用於回傳前端繪圖所需的資料點（2D/3D），支援指定欄位、條件過濾、抽樣及額外欄位，以供互動顯示更多特徵。",
+          "error": null
+        },
+        {
+          "function": "evaluationPlanTask",
+          "name": "evaluationPlanTask",
+          "signature": "async evaluationPlanTask(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/evaluationPlanTask",
+          "full_path": "/evaluationPlanTask",
+          "router_name": "app",
+          "docstring": "評估模型適配性",
+          "summary": "這個 API 端點的用途是評估模型適配性。",
+          "error": null
+        },
+        {
+          "function": "evaluationFitAnalysis",
+          "name": "evaluationFitAnalysis",
+          "signature": "async evaluationFitAnalysis(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/evaluationPlanTaskLLM",
+          "full_path": "/evaluationPlanTaskLLM",
+          "router_name": "app",
+          "docstring": "LLM評估模型適配性分析",
+          "summary": "這個 API 端點提供LLM評估模型適配性分析功能。",
+          "error": null
+        },
+        {
+          "function": "preview_file",
+          "name": "preview_file",
+          "signature": "async preview_file(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/file/preview",
+          "full_path": "/file/preview",
+          "router_name": "app",
+          "docstring": "偵測檔案欄位並預覽前N項資料\n\n- 支援 .xlsx, .xls, .csv, .pkl 格式\n- 如果是 xlsx 需要有 sheet 參數\n- 值使用 DFP.parse(x, digit=4) 轉成字串並截取前20字元",
+          "summary": "此 API 端點用於偵測檔案欄位並預覽前N項資料，支援.xlsx、.xls、.csv、.pkl格式，並將值轉換成字串並截取前20字元。",
+          "error": null
+        },
+        {
+          "function": "convert_file_to_pkl",
+          "name": "convert_file_to_pkl",
+          "signature": "async convert_file_to_pkl(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/file/convert-to-pkl",
+          "full_path": "/file/convert-to-pkl",
+          "router_name": "app",
+          "docstring": "將 xlsx 或 csv 檔案轉換為 pkl 檔案\n\n- 支援 .xlsx, .xls, .csv 格式\n- xlsx 需要指定 sheet 參數\n- protocol 預設為 4",
+          "summary": "將 xlsx 或 csv 檔案轉換為 pkl 檔案，支援.xlsx、.xls、.csv 格式，需指定 sheet 參數，預設 protocol 為 4。",
+          "error": null
+        },
+        {
+          "function": "convert_pkl_protocol",
+          "name": "convert_pkl_protocol",
+          "signature": "async convert_pkl_protocol(request)",
+          "methods": [
+            "POST"
+          ],
+          "path": "/file/convert-pkl-protocol",
+          "full_path": "/file/convert-pkl-protocol",
+          "router_name": "app",
+          "docstring": "轉換 pkl 檔案的 protocol 版本\n\n- 僅支援 .pkl 檔案\n- protocol 預設為 4\n- 其他格式檔案會被拒絕",
+          "summary": "轉換 pkl 檔案的 protocol 版本，僅支援.pkl 檔案，預設 protocol 為 4，其他格式檔案會被拒絕。",
+          "error": null
+        }
+      ]
+    }
+  }
+}

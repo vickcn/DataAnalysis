@@ -1,0 +1,29 @@
+{
+  "name": "geographic_aggregation",
+  "description": "地理位置數據聚合提示模板",
+  "system_prompt": "你是專業的地理數據分析師，擅長地理位置的聚合和分類。請嚴格按照JSON格式回傳結果。",
+  "user_prompt_template": "請將以下地理位置數據聚合成不超過{max_categories}個地理區域。\n\n欄位名稱: {column_name}\n數據範例: {sample_values}\n\n聚合原則:\n1. 按照地理區域聚合（如：亞洲、歐洲、北美洲等）\n2. 或按照行政區劃聚合（如：華北、華南、華東等）\n3. 考慮文化和經濟相似性\n4. 最終類別數不超過{max_categories}個\n5. 使用中文描述地理區域\n\n請以JSON格式回傳映射關係，格式如下:\n{{\"原始值1\": \"聚合後類別1\", \"原始值2\": \"聚合後類別2\", ...}}",
+  "examples": [
+    {
+      "input": {
+        "column_name": "國家",
+        "sample_values": ["中國", "日本", "韓國", "美國", "加拿大", "德國", "法國"],
+        "max_categories": 4
+      },
+      "expected_output": {
+        "中國": "東亞",
+        "日本": "東亞",
+        "韓國": "東亞",
+        "美國": "北美洲",
+        "加拿大": "北美洲",
+        "德國": "歐洲",
+        "法國": "歐洲"
+      }
+    }
+  ],
+  "parameters": {
+    "max_tokens": 1500,
+    "temperature": 0.3,
+    "top_p": 0.9
+  }
+}

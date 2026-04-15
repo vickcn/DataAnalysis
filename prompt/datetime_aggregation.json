@@ -1,0 +1,25 @@
+{
+  "name": "datetime_aggregation",
+  "description": "時間數據聚合提示模板",
+  "system_prompt": "你是專業的數據分析師，擅長時間數據的聚合和分類。請嚴格按照JSON格式回傳結果。",
+  "user_prompt_template": "請將以下時間數據聚合成不超過{max_categories}個時間段。\n\n欄位名稱: {column_name}\n數據範例: {sample_values}\n\n聚合原則:\n1. 將相似的時間聚合成有意義的時間段\n2. 考慮時間的自然分組（如：上午、下午、晚上；工作日、週末；季節等）\n3. 最終類別數不超過{max_categories}個\n4. 使用中文描述時間段\n\n請以JSON格式回傳映射關係，格式如下:\n{{\"原始值1\": \"聚合後類別1\", \"原始值2\": \"聚合後類別2\", ...}}",
+  "examples": [
+    {
+      "input": {
+        "column_name": "訪問時間",
+        "sample_values": ["2023-01-01 09:30:00", "2023-01-01 14:20:00", "2023-01-01 19:45:00"],
+        "max_categories": 6
+      },
+      "expected_output": {
+        "2023-01-01 09:30:00": "上午時段",
+        "2023-01-01 14:20:00": "下午時段", 
+        "2023-01-01 19:45:00": "晚上時段"
+      }
+    }
+  ],
+  "parameters": {
+    "max_tokens": 1500,
+    "temperature": 0.3,
+    "top_p": 0.9
+  }
+}

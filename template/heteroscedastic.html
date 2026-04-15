@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Scientific Data Lab · Heteroscedastic</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <link rel="stylesheet" href="/static/css/heteroscedastic.css" />
+</head>
+<body class="app hetero-page">
+  <div class="topbar">
+    <div class="topbar-left">
+      <a class="topbar-brand" href="/index.html">
+        <span class="logo-dot"></span>
+        <span>Scientific Data Lab</span>
+      </a>
+      <span class="topbar-sep"></span>
+
+      <label class="mini">
+        API Base
+        <input id="apiBase" class="input mono" placeholder="http://10.1.3.127:6030" />
+      </label>
+      <button class="btn small" id="btnSaveApi">儲存</button>
+      <button class="btn small ghost" id="btnPing">Ping</button>
+      <span id="apiStatus" class="status-dot" title="API status"></span>
+    </div>
+    <div class="topbar-right">
+      <div class="kbd mono small">Heteroscedastic / Instability Workbench</div>
+    </div>
+  </div>
+
+  <div class="layout hetero-layout">
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">資料來源</div>
+
+        <div class="field">
+          <div class="label">瀏覽（僅 source_disk 底下）</div>
+          <div class="row">
+            <select id="fileSelect" class="input"></select>
+            <button class="btn ghost" id="btnRefreshFiles">刷新</button>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="browsePath" class="input mono" placeholder="目前目錄" spellcheck="false" title="可手動輸入路徑，按 Enter 切換" />
+            <button class="btn ghost" id="btnUpDir">上層</button>
+            <button class="btn ghost" id="btnBrowse">瀏覽</button>
+          </div>
+        </div>
+
+        <div class="field grid2">
+          <div>
+            <div class="label">Sheet</div>
+            <input id="sheetInput" class="input mono" type="number" min="0" value="0" />
+          </div>
+          <div>
+            <div class="label">預覽列數</div>
+            <input id="previewRows" class="input mono" type="number" min="1" value="5" />
+          </div>
+        </div>
+
+        <div class="field">
+          <button class="btn primary" id="btnPreview">讀取欄位 / 預覽</button>
+        </div>
+
+        <div class="divider"></div>
+        <div class="panel-title">分析欄位</div>
+
+        <div class="field">
+          <div class="label">快速搜尋</div>
+          <input id="colSearch" class="input mono" placeholder="搜尋 x / y 欄位" />
+        </div>
+
+        <div class="field grid2">
+          <div>
+            <div class="label">X Column</div>
+            <div id="xPicker" class="picker"></div>
+          </div>
+          <div>
+            <div class="label">Y Column</div>
+            <div id="yPicker" class="picker"></div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <div class="panel-title">執行模式</div>
+
+        <div class="field">
+          <div class="label">輸出目錄（save / plot 用）</div>
+          <input id="outputDir" class="input mono" placeholder="留空則走後端預設 output_dir" />
+        </div>
+
+        <div class="field">
+          <div class="label">Layers</div>
+          <div class="check-row mono small">
+            <label><input type="checkbox" class="layerChk" value="1" checked /> Layer 1</label>
+            <label><input type="checkbox" class="layerChk" value="2" checked /> Layer 2</label>
+            <label><input type="checkbox" class="layerChk" value="3" checked /> Layer 3</label>
+          </div>
+        </div>
+
+        <div class="field grid3">
+          <div>
+            <div class="label">資料型態</div>
+            <select id="isDiscrete" class="input">
+              <option value="auto">Auto</option>
+              <option value="true">Discrete</option>
+              <option value="false">Continuous</option>
+            </select>
+          </div>
+          <div>
+            <div class="label">Unique 閾值</div>
+            <input id="discreteThreshold" class="input mono" type="number" value="10" />
+          </div>
+          <div>
+            <div class="label">shrink_k</div>
+            <input id="shrinkK" class="input mono" type="number" value="20" />
+          </div>
+        </div>
+
+        <div class="field grid3">
+          <div>
+            <div class="label">model</div>
+            <select id="model" class="input">
+              <option value="krr">krr</option>
+              <option value="rf">rf</option>
+              <option value="gbr">gbr</option>
+              <option value="svr">svr</option>
+            </select>
+          </div>
+          <div>
+            <div class="label">cv_folds</div>
+            <input id="cvFolds" class="input mono" type="number" value="5" />
+          </div>
+          <div>
+            <div class="label">preview_n</div>
+            <input id="previewN" class="input mono" type="number" value="8" />
+          </div>
+        </div>
+
+        <div class="field grid4">
+          <div>
+            <div class="label">norm_method</div>
+            <select id="normMethod" class="input">
+              <option value="quantile">quantile</option>
+              <option value="max">max</option>
+              <option value="bounded">bounded</option>
+            </select>
+          </div>
+          <div>
+            <div class="label">q_low</div>
+            <input id="qLow" class="input mono" type="number" step="0.01" value="0.05" />
+          </div>
+          <div>
+            <div class="label">q_high</div>
+            <input id="qHigh" class="input mono" type="number" step="0.01" value="0.95" />
+          </div>
+          <div>
+            <div class="label">c</div>
+            <input id="cValue" class="input mono" type="number" step="0.01" placeholder="nullable" />
+          </div>
+        </div>
+
+        <div class="field grid4">
+          <div>
+            <div class="label">tol</div>
+            <input id="tol" class="input mono" type="number" step="0.0001" placeholder="nullable" />
+          </div>
+          <div>
+            <div class="label">invert</div>
+            <select id="invert" class="input">
+              <option value="false">false</option>
+              <option value="true">true</option>
+            </select>
+          </div>
+          <div>
+            <div class="label">density_shrink</div>
+            <select id="densityShrink" class="input">
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </div>
+          <div>
+            <div class="label">bandwidth</div>
+            <input id="densityBandwidth" class="input mono" type="number" step="0.01" value="0.2" />
+          </div>
+        </div>
+
+        <div class="field grid2">
+          <div>
+            <div class="label">density_lambda</div>
+            <input id="densityLambda" class="input mono" type="number" step="0.1" value="3.0" />
+          </div>
+          <div>
+            <div class="label">raw_layers_fn</div>
+            <input id="rawLayersFn" class="input mono" value="raw_with_instability_layers" />
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="label">fig_title（plot 可選）</div>
+          <input id="figTitle" class="input" placeholder="留空則後端自動命名" />
+        </div>
+
+        <div class="field">
+          <button class="btn primary" id="btnCompute">Compute</button>
+          <button class="btn ghost" id="btnSave">Save</button>
+          <button class="btn ghost" id="btnPlot">Plot</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">執行紀錄</div>
+        <div id="log" class="log mono"></div>
+      </div>
+    </aside>
+
+    <main class="main hetero-main">
+      <div class="summary-grid">
+        <div class="canvas-card mini-card">
+          <div class="canvas-head">
+            <div>
+              <div class="canvas-title">資料預覽</div>
+              <div class="canvas-sub mono small" id="previewMeta">尚未讀取</div>
+            </div>
+          </div>
+          <div class="card-scroll">
+            <div id="previewTableWrap" class="table-wrap empty-hint">請先讀取欄位 / 預覽</div>
+          </div>
+        </div>
+
+        <div class="canvas-card mini-card">
+          <div class="canvas-head">
+            <div>
+              <div class="canvas-title">結果摘要</div>
+              <div class="canvas-sub mono small" id="resultMeta">等待執行</div>
+            </div>
+          </div>
+          <div class="card-scroll metrics-grid" id="resultSummary">
+            <div class="metric-box"><div class="metric-label">mode</div><div class="metric-value mono">-</div></div>
+            <div class="metric-box"><div class="metric-label">x / y</div><div class="metric-value mono">-</div></div>
+            <div class="metric-box"><div class="metric-label">layers</div><div class="metric-value mono">-</div></div>
+            <div class="metric-box"><div class="metric-label">note</div><div class="metric-value mono">-</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="canvas-card result-card">
+        <div class="canvas-head">
+          <div>
+            <div class="canvas-title">JSON Response</div>
+            <div class="canvas-sub mono small">直接查看 instability API 的回傳內容</div>
+          </div>
+          <div class="canvas-actions">
+            <button class="btn ghost" id="btnCopyJson">Copy JSON</button>
+          </div>
+        </div>
+        <div id="jsonOut" class="json-view mono">{
+  "message": "尚未執行"
+}</div>
+      </div>
+
+      <div class="canvas-card result-card">
+        <div class="canvas-head">
+          <div>
+            <div class="canvas-title">Layers Preview</div>
+            <div class="canvas-sub mono small">後端 preview_n 回傳的 layer table preview</div>
+          </div>
+        </div>
+        <div id="layersPreviewWrap" class="table-wrap empty-hint">尚無資料</div>
+      </div>
+
+      <div class="canvas-card result-card">
+        <div class="canvas-head">
+          <div>
+            <div class="canvas-title">輸出檔案 / 圖檔</div>
+            <div class="canvas-sub mono small">save / plot 回傳路徑</div>
+          </div>
+        </div>
+        <div id="pathsWrap" class="paths-wrap empty-hint">尚無輸出路徑</div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/js/heteroscedastic.js?v=20260414a"></script>
+</body>
+</html>

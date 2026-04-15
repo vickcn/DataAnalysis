@@ -1,0 +1,30 @@
+{
+  "name": "general_aggregation",
+  "description": "一般類別數據聚合提示模板", 
+  "system_prompt": "你是專業的數據分析師，擅長類別數據的聚合和分類。請嚴格按照JSON格式回傳結果。",
+  "user_prompt_template": "請將以下類別數據聚合成不超過{max_categories}個主要類別。\n\n欄位名稱: {column_name}\n數據類型: {data_type}\n數據範例: {sample_values}\n頻率資訊: {frequency_info}\n\n聚合原則:\n1. 根據語義相似性聚合相關類別\n2. 保留高頻率的重要類別\n3. 將低頻率的類別合併到相似的高頻類別中\n4. 考慮業務邏輯和實際意義\n5. 最終類別數不超過{max_categories}個\n6. 使用簡潔明確的中文描述\n\n請以JSON格式回傳映射關係，格式如下:\n{{\"原始值1\": \"聚合後類別1\", \"原始值2\": \"聚合後類別2\", ...}}",
+  "examples": [
+    {
+      "input": {
+        "column_name": "產品類別",
+        "data_type": "general",
+        "sample_values": ["智慧型手機", "平板電腦", "筆記型電腦", "桌上型電腦", "智慧手錶", "耳機"],
+        "frequency_info": {"智慧型手機": 150, "平板電腦": 80, "筆記型電腦": 120},
+        "max_categories": 3
+      },
+      "expected_output": {
+        "智慧型手機": "行動裝置",
+        "平板電腦": "行動裝置",
+        "智慧手錶": "行動裝置", 
+        "筆記型電腦": "電腦設備",
+        "桌上型電腦": "電腦設備",
+        "耳機": "配件周邊"
+      }
+    }
+  ],
+  "parameters": {
+    "max_tokens": 2000,
+    "temperature": 0.3,
+    "top_p": 0.9
+  }
+}
