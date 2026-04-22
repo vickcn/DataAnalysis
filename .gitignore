@@ -29,7 +29,9 @@
 **.xlsx
 **.xlsm
 **heteroscedastic_frontend_pack**
-
+$out**
+*Output**
+*output**
 
 # 临时文件
 **.tmp

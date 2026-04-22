@@ -73,11 +73,13 @@
         <div class="field grid2">
           <div>
             <div class="label">X Column</div>
-            <div id="xPicker" class="picker"></div>
+            <select id="xPicker" class="input mono"></select>
+            <div id="xMeta" class="hint mono small">尚未選擇</div>
           </div>
           <div>
             <div class="label">Y Column</div>
-            <div id="yPicker" class="picker"></div>
+            <select id="yPicker" class="input mono"></select>
+            <div id="yMeta" class="hint mono small">尚未選擇</div>
           </div>
         </div>
 
@@ -215,6 +217,15 @@
     </aside>
 
     <main class="main hetero-main">
+      <div id="resultBusyMask" class="result-busy-mask" aria-hidden="true">
+        <div class="result-busy-card">
+          <div class="result-busy-spinner" aria-hidden="true"></div>
+          <div class="result-busy-meta">
+            <div id="resultBusyText" class="mono small">計算中...</div>
+            <div id="resultBusyElapsed" class="mono small">0.0s</div>
+          </div>
+        </div>
+      </div>
       <div class="summary-grid">
         <div class="canvas-card mini-card">
           <div class="canvas-head">
@@ -244,6 +255,18 @@
         </div>
       </div>
 
+      <div class="canvas-card result-card plot-card">
+        <div class="canvas-head">
+          <div>
+            <div class="canvas-title">Interactive Plot (Plotly)</div>
+            <div class="canvas-sub mono small" id="plotlyMeta">請先執行 Compute / Plot</div>
+          </div>
+        </div>
+        <div class="card-scroll">
+          <div id="plotlyWrap" class="plotly-wrap empty-hint">尚無互動圖資料</div>
+        </div>
+      </div>
+
       <div class="canvas-card result-card">
         <div class="canvas-head">
           <div>
@@ -251,12 +274,17 @@
             <div class="canvas-sub mono small">直接查看 instability API 的回傳內容</div>
           </div>
           <div class="canvas-actions">
-            <button class="btn ghost" id="btnCopyJson">Copy JSON</button>
+            <button class="btn ghost" id="btnToggleJson">顯示 JSON</button>
           </div>
         </div>
-        <div id="jsonOut" class="json-view mono">{
+        <div id="jsonSection" class="json-section collapsed">
+          <div class="json-actions">
+            <button class="btn ghost" id="btnCopyJson">Copy JSON</button>
+          </div>
+          <div id="jsonOut" class="json-view mono">{
   "message": "尚未執行"
 }</div>
+        </div>
       </div>
 
       <div class="canvas-card result-card">
@@ -281,6 +309,8 @@
     </main>
   </div>
 
-  <script src="/static/js/heteroscedastic.js?v=20260414a"></script>
+  <!-- TODO(issues/動態互動對齊AIAPI.iss): 進頁後呼叫 GET /config/resolve-xy（或 /project-params）自動帶入 x/y，無 zones 時保留手動選欄 -->
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <script src="/static/js/heteroscedastic.js?v=20260416a"></script>
 </body>
 </html>

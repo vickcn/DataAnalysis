@@ -33,7 +33,9 @@ from sklearn import metrics as skm
 from datetime import datetime as dt
 from mpl_toolkits.mplot3d import Axes3D
 import os
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import gc
+from typing import Optional
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from functools import partial
 import multiprocessing as mp
 
@@ -49,6 +51,7 @@ vs = vs2.vs
 import seaborn as sns
 LOGger = DFP.LOGger
 import time
+import gc
 #%%
 if(False):
     __file__ = 'data_analysis.py'
@@ -663,45 +666,229 @@ def _compute_mic_pair(args):
     except Exception as e:
         return (i, j, np.nan)
 
+
+def _plot_job_should_stop(cancel_event=None, deadline_monotonic=None) -> bool:
+    """Best-effort cooperative cancellation check for long-running MIC jobs."""
+    try:
+        if cancel_event is not None and getattr(cancel_event, 'is_set', lambda: False)():
+            return True
+    except Exception:
+        pass
+    if deadline_monotonic is not None:
+        try:
+            if time.monotonic() > float(deadline_monotonic):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _safe_cleanup_callback(cb, *args):
+    if not callable(cb):
+        return
+    try:
+        cb(*args)
+    except Exception:
+        pass
+
+
+def _executor_worker_pids(executor) -> list:
+    pids = []
+    try:
+        procs = getattr(executor, "_processes", {}) or {}
+        pids = [int(pid) for pid in procs.keys() if int(pid) > 0]
+    except Exception:
+        pids = []
+    return sorted(set(pids))
+
+
+def resolve_mic_n_jobs(n_jobs, stamps=None, log_tag="mic_matrix"):
+    """
+    統一決定 MIC 並行 workers 數量：None 表自動（max(1, cpu-1)），其餘轉 int 後 clamp 到 1..cpu_count。
+    """
+    try:
+        cpu = max(1, int(mp.cpu_count() or 1))
+    except Exception:
+        cpu = 1
+    if n_jobs is None:
+        n = max(1, cpu - 1) if cpu > 1 else 1
+    else:
+        try:
+            n_raw = int(n_jobs)
+        except (TypeError, ValueError):
+            n_raw = max(1, cpu - 1) if cpu > 1 else 1
+        n = cpu if n_raw == -1 else n_raw
+    n = min(max(n, 1), cpu)
+    try:
+        m_print(
+            f'[{log_tag}] 採用 n_jobs={n}（cpu_count={cpu}，原始參數={n_jobs!r}）',
+            stamps=stamps if isinstance(stamps, list) else [],
+            colora=LOGger.OKCYAN,
+        )
+    except Exception:
+        pass
+    return int(n)
+
+
+def _executor_terminate_workers(executor) -> int:
+    """Terminate active ProcessPool workers and return killed count."""
+    killed = 0
+    try:
+        procs = getattr(executor, "_processes", {}) or {}
+    except Exception:
+        procs = {}
+    for _, proc in list(procs.items()):
+        if proc is None:
+            continue
+        try:
+            alive = proc.is_alive()
+        except Exception:
+            alive = True
+        if not alive:
+            continue
+        terminated = False
+        try:
+            proc.terminate()
+            terminated = True
+        except Exception:
+            terminated = False
+        if terminated:
+            killed += 1
+        try:
+            if proc.is_alive():
+                proc.kill()
+        except Exception:
+            pass
+    return killed
+
+
+def _mic_matrix_from_spill_store(
+    store,
+    handle_discrete: bool = True,
+    n_jobs: Optional[int] = None,
+    use_fast_correlation: bool = False,
+    max_samples: Optional[int] = None,
+    job_cancel_event=None,
+    job_deadline_monotonic=None,
+    on_worker_pids=None,
+    on_cancelled_futures=None,
+    on_killed_workers=None,
+    on_cleanup_error=None,
+    **kwargs
+):
+    """
+    由 SpillStore 分欄讀取、逐對計算 MIC（目前為序列化，避免多進程與 I/O 交錯複雑度）。
+    """
+    if _plot_job_should_stop(job_cancel_event, job_deadline_monotonic):
+        return None
+    if use_fast_correlation:
+        m_print(
+            "[mic_matrix][spill] 已忽略 use_fast_correlation，改用逐對 MIC。",
+            colora=LOGger.WARNING,
+        )
+    if max_samples is not None:
+        m_print(
+            "[mic_matrix][spill] 不套用 max_samples，請關閉 spill 或關閉採樣。",
+            colora=LOGger.WARNING,
+        )
+    n_eff = resolve_mic_n_jobs(n_jobs, log_tag="mic_matrix_spill")
+    if n_eff and n_eff > 1:
+        m_print(
+            "[mic_matrix][spill] 目前僅序列計算，已忽略 n_jobs>1。",
+            colora=LOGger.WARNING,
+        )
+    try:
+        columns = list(getattr(store, "columns", []))
+    except Exception as e:
+        _safe_cleanup_callback(on_cleanup_error, f"spill columns failed: {e}")
+        return None
+    n = len(columns)
+    if n < 1:
+        return None
+    mic_values = np.full((n, n), np.nan)
+    alpha = 0.6
+    c = 15
+    for i, col_i in enumerate(columns):
+        if _plot_job_should_stop(job_cancel_event, job_deadline_monotonic):
+            return None
+        mic_values[i, i] = 1.0
+        for j in range(i + 1, n):
+            if _plot_job_should_stop(job_cancel_event, job_deadline_monotonic):
+                return None
+            col_j = columns[j]
+            try:
+                s_i = store.read_column(col_i)
+                s_j = store.read_column(col_j)
+            except Exception as e:
+                _safe_cleanup_callback(on_cleanup_error, f"read_column failed: {e}")
+                continue
+            if handle_discrete:
+                x_data, _ = to_numeric_codes(s_i, fill_missing=False)
+                y_data, _ = to_numeric_codes(s_j, fill_missing=False)
+            else:
+                x_data = s_i.astype(float).to_numpy()
+                y_data = s_j.astype(float).to_numpy()
+            try:
+                _, _, mic = _compute_mic_pair(
+                    (i, j, col_i, col_j, x_data, y_data, alpha, c)
+                )
+            except Exception as e:
+                _safe_cleanup_callback(on_cleanup_error, f"pair mic failed: {e}")
+                continue
+            mic_values[i, j] = mic
+            mic_values[j, i] = mic
+    return pd.DataFrame(mic_values, index=columns, columns=columns)
+
+
 def mic_matrix(df, handle_discrete=True, n_jobs=None, use_fast_correlation=False,
-               max_samples=None, sampling_method='hybrid', random_state=42, stats_info=None, **kwargs):
+               max_samples=None, sampling_method='hybrid', random_state=42, stats_info=None,
+               job_cancel_event=None, job_deadline_monotonic=None, on_worker_pids=None,
+               on_cancelled_futures=None, on_killed_workers=None, on_cleanup_error=None,
+               stop_check_interval=0.2, **kwargs):
     """
-    計算DataFrame中所有列之間的MIC值矩陣
-    支援離散數據處理和並行計算
-    
-    參數:
-        df: pandas DataFrame
-        handle_discrete: bool, 是否處理離散數據 (預設True)
-        n_jobs: int, 並行處理的工作進程數。None表示使用所有CPU核心，-1表示使用所有核心-1
-        use_fast_correlation: bool, 是否使用快速的Pearson相關性代替MIC（僅適用於純數值數據）
-        max_samples: int, 最大樣本數。None 表示不採樣
-        sampling_method: str, 採樣方法
-            - 'none': 不採樣
-            - 'random': 簡單隨機採樣
-            - 'quantile': 分位數採樣（保留極值和分位數）
-            - 'hybrid': 混合採樣（推薦，結合分位數和隨機採樣）
-            - 'stratified': 分層採樣（需要指定 stratify_col）
-            - 'density': 密度感知採樣（基於聚類）
-        random_state: int, 隨機種子
-        **kwargs: 其他參數
-            - stratify_col: str, 分層採樣的欄位名稱（用於 stratified 方法）
-            - quantile_ratio: float, 混合採樣中分位數採樣的比例（預設 0.3）
-            - n_quantiles: int, 分位數採樣的數量（預設 5）
-    
-    返回:
-        mic_df: 包含MIC值的DataFrame
+    計算 DataFrame 中各欄位之間的 MIC 相關矩陣。
+    若收到取消訊號或超時，會盡快停止並回傳 None。
+    kwargs 可含 spill_store；若已提供則不讀入整表於 MIC 迴圈（與 PklSpillStore 搭配）。
     """
+    spill = kwargs.get("spill_store")
+    if spill is not None:
+        return _mic_matrix_from_spill_store(
+            spill,
+            handle_discrete=handle_discrete,
+            n_jobs=n_jobs,
+            use_fast_correlation=use_fast_correlation,
+            max_samples=max_samples,
+            job_cancel_event=job_cancel_event,
+            job_deadline_monotonic=job_deadline_monotonic,
+            on_worker_pids=on_worker_pids,
+            on_cancelled_futures=on_cancelled_futures,
+            on_killed_workers=on_killed_workers,
+            on_cleanup_error=on_cleanup_error,
+            **kwargs,
+        )
+
+    if df is None:
+        return None
+
+    if _plot_job_should_stop(job_cancel_event, job_deadline_monotonic):
+        return None
+
     # 資料採樣
     if max_samples is not None and len(df) > max_samples:
         original_size = len(df)
         LOGger.addDebug(f'資料量 {original_size} 超過 {max_samples}，使用 {sampling_method} 採樣...')
-        sampler = get_sampler(sampling_method=sampling_method, random_state=random_state, stats_info=stats_info, **kwargs)
+        sampler = get_sampler(
+            sampling_method=sampling_method,
+            random_state=random_state,
+            stats_info=stats_info,
+            **kwargs,
+        )
         df = sampler.sample(df, max_samples=max_samples)
         LOGger.addDebug(f'採樣後資料量: {len(df)} (減少 {original_size - len(df)} 筆)')
-    
-    n = df.shape[1]  # 獲取列數
-    columns = getattr(df,'columns', np.arange(n).tolist())
-    
+
+    n = df.shape[1]
+    columns = getattr(df, 'columns', np.arange(n).tolist())
+
     # 快速相關性選項（僅適用於純數值數據）
     if use_fast_correlation and handle_discrete:
         numeric_only = df.select_dtypes(include=[np.number])
@@ -709,79 +896,124 @@ def mic_matrix(df, handle_discrete=True, n_jobs=None, use_fast_correlation=False
             LOGger.addDebug('Using fast Pearson correlation instead of MIC')
             corr_matrix = numeric_only.corr().values
             return pd.DataFrame(corr_matrix, index=columns, columns=columns)
-    
+
     # 預處理數據：轉換為數值格式
     processed_data = {}
     discrete_flags = {}
-    
     if handle_discrete:
         for col in df.columns:
-            # 離散數據時，fill_missing=True 讓 factorize 處理 NaN
             processed_data[col], discrete_flags[col] = to_numeric_codes(df[col], fill_missing=False)
     else:
-        # 原有邏輯：直接使用數值，但保留 NaN
         for col in df.columns:
             processed_data[col] = df[col].astype(float).to_numpy()
             discrete_flags[col] = False
-    
-    # 創建空的MIC矩陣，使用 NaN 初始化
+
     mic_values = np.full((n, n), np.nan)
-    
-    # 準備並行計算的參數
     alpha = 0.6
     c = 15
-    
-    # 決定是否使用並行計算
-    if n_jobs is None:
-        n_jobs = max(1, mp.cpu_count() - 1)  # 預設使用所有核心-1
-    elif n_jobs == -1:
-        n_jobs = mp.cpu_count()
-    
-    # 準備所有需要計算的配對
+
+    n_jobs = resolve_mic_n_jobs(n_jobs, log_tag="mic_matrix")
+
     pairs_to_compute = []
     for i, col_i in enumerate(columns):
-        for j, col_j in enumerate(columns[i:], i):  # 只需計算上三角矩陣
+        for j, col_j in enumerate(columns[i:], i):
             if i == j:
-                mic_values[i, j] = 1.0  # 對角線為1
+                mic_values[i, j] = 1.0
             else:
                 x_data = processed_data[col_i]
                 y_data = processed_data[col_j]
                 pairs_to_compute.append((i, j, col_i, col_j, x_data, y_data, alpha, c))
-    
-    # 並行計算MIC
+
+    try:
+        check_interval = max(0.05, float(stop_check_interval))
+    except Exception:
+        check_interval = 0.2
+
+    # 並行計算 MIC（支援取消）
     if len(pairs_to_compute) > 0 and n_jobs > 1:
         LOGger.addDebug(f'Computing MIC matrix in parallel with {n_jobs} processes...')
+        executor = None
+        force_shutdown = False
         try:
-            with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-                results = list(executor.map(_compute_mic_pair, pairs_to_compute))
-            
-            # 填充結果到矩陣
-            for i, j, mic in results:
-                mic_values[i, j] = mic
-                mic_values[j, i] = mic  # MIC矩陣是對稱的
+            executor = ProcessPoolExecutor(max_workers=n_jobs)
+            futures = {executor.submit(_compute_mic_pair, pair) for pair in pairs_to_compute}
+
+            while futures:
+                worker_pids = _executor_worker_pids(executor)
+                if worker_pids:
+                    _safe_cleanup_callback(on_worker_pids, worker_pids)
+
+                if _plot_job_should_stop(job_cancel_event, job_deadline_monotonic):
+                    force_shutdown = True
+                    cancelled_count = 0
+                    for fut in list(futures):
+                        if fut.cancel():
+                            cancelled_count += 1
+                    if cancelled_count > 0:
+                        _safe_cleanup_callback(on_cancelled_futures, cancelled_count)
+
+                    killed = _executor_terminate_workers(executor)
+                    if killed > 0:
+                        _safe_cleanup_callback(on_killed_workers, killed)
+
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        executor.shutdown(wait=False)
+                    executor = None
+                    return None
+
+                done, pending = wait(
+                    futures,
+                    timeout=check_interval,
+                    return_when=FIRST_COMPLETED,
+                )
+                futures = set(pending)
+                if not done:
+                    continue
+                for fut in done:
+                    if fut.cancelled():
+                        continue
+                    try:
+                        i, j, mic = fut.result()
+                    except Exception as e:
+                        _safe_cleanup_callback(on_cleanup_error, f'worker future failed: {e}')
+                        continue
+                    mic_values[i, j] = mic
+                    mic_values[j, i] = mic
         except Exception as e:
+            _safe_cleanup_callback(on_cleanup_error, f'parallel MIC failed: {e}')
             LOGger.addlog(f'Parallel computation failed, falling back to serial: {e}', colora=LOGger.WARNING)
-            # 回退到串行計算
+            if _plot_job_should_stop(job_cancel_event, job_deadline_monotonic):
+                return None
             for i, j, col_i, col_j, x_data, y_data, alpha, c in pairs_to_compute:
-                result = _compute_mic_pair((i, j, col_i, col_j, x_data, y_data, alpha, c))
-                _, _, mic = result
+                if _plot_job_should_stop(job_cancel_event, job_deadline_monotonic):
+                    return None
+                _, _, mic = _compute_mic_pair((i, j, col_i, col_j, x_data, y_data, alpha, c))
                 mic_values[i, j] = mic
                 mic_values[j, i] = mic
+        finally:
+            if executor is not None:
+                try:
+                    if force_shutdown:
+                        try:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                        except TypeError:
+                            executor.shutdown(wait=False)
+                    else:
+                        executor.shutdown(wait=True)
+                except Exception as e:
+                    _safe_cleanup_callback(on_cleanup_error, f'executor shutdown failed: {e}')
     else:
-        # 串行計算
         LOGger.addDebug('Computing MIC matrix serially...')
         for i, j, col_i, col_j, x_data, y_data, alpha, c in pairs_to_compute:
-            result = _compute_mic_pair((i, j, col_i, col_j, x_data, y_data, alpha, c))
-            _, _, mic = result
+            if _plot_job_should_stop(job_cancel_event, job_deadline_monotonic):
+                return None
+            _, _, mic = _compute_mic_pair((i, j, col_i, col_j, x_data, y_data, alpha, c))
             mic_values[i, j] = mic
             mic_values[j, i] = mic
-    
-    # 轉換為DataFrame
-    mic_df = pd.DataFrame(mic_values, 
-                         index=columns, 
-                         columns=columns)
-    
-    return mic_df
+
+    return pd.DataFrame(mic_values, index=columns, columns=columns)
 
 def plotDataDistribution(data, fig=None, visualizeMethod='report', file='', handler=None, exp_fd='.', stamps=None, figsize=(10,15), **kwags):
     if(exp_fd is None): exp_fd = LOGger.execute('exp_fd', handler, default='.')
@@ -842,36 +1074,18 @@ def saveCorrelation(data, method='mic', exp_fd='.', stamps=None, ret=None, **kwa
         LOGger.addDebug('saveCorrelation over!!!!')
     return True
 
-def is_numeric_column(series):
+def is_numeric_column(series, min_numeric_ratio=0.98):
     """判斷欄位是否為數值型（連續型）"""
-    # 首先檢查原始數據類型
-    if series.dtype in ['int64', 'float64', 'int32', 'float32']:
+    if pd.api.types.is_numeric_dtype(series):
         return True
-    
-    # 檢查是否可以轉換為數值
-    try:
-        pd.to_numeric(series, errors='raise')
-        return True
-    except (ValueError, TypeError):
-        pass
-    
-    # 檢查是否為聚合後的數值型數據（字符串格式的數值）
-    if series.dtype == 'object':
-        # 取樣本檢查是否為數值字符串
-        sample = series.dropna().head(10)
-        numeric_count = 0
-        for val in sample:
-            try:
-                float(str(val))
-                numeric_count += 1
-            except (ValueError, TypeError):
-                pass
-        
-        # 如果大部分樣本都是數值字符串，視為數值型
-        if len(sample) > 0 and numeric_count / len(sample) >= 0.8:
-            return True
-    
-    return False
+
+    non_null = series.dropna()
+    if non_null.empty:
+        return False
+
+    numeric_series = pd.to_numeric(non_null, errors='coerce')
+    numeric_ratio = float(numeric_series.notna().mean())
+    return numeric_ratio >= min_numeric_ratio
 
 def is_categorical_column(series):
     """判斷欄位是否為類別型（離散型）"""
@@ -982,7 +1196,11 @@ def drawCorrmap(df, stamps=None, handler=None, ret=None, mask=None, maskColumnNa
                     data_col = df[col_i].dropna()
                     if column_is_numeric.get(col_i, False):
                         # 連續型：直方圖
-                        ax.hist(data_col, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+                        numeric_data = pd.to_numeric(data_col, errors='coerce').dropna()
+                        if len(numeric_data) > 0:
+                            ax.hist(numeric_data, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+                        else:
+                            ax.text(0.5, 0.5, '無有效數值資料', ha='center', va='center', transform=ax.transAxes)
                         ax.set_title(f'{col_i} 分布', fontproperties=vs3.MJHfontprop())
                     else:
                         # 類別型：計數圖
@@ -1011,21 +1229,39 @@ def drawCorrmap(df, stamps=None, handler=None, ret=None, mask=None, maskColumnNa
                     
                     if x_is_numeric and y_is_numeric:
                         # 連續 vs 連續：散點圖 + 回歸線
-                        ax.scatter(x_clean, y_clean, alpha=0.6, color='blue')
-                        # 添加回歸線
-                        try:
-                            z = np.polyfit(x_clean.astype(float), y_clean.astype(float), 1)
-                            p = np.poly1d(z)
-                            ax.plot(x_clean, p(x_clean.astype(float)), "r--", alpha=0.8)
-                        except:
-                            pass
+                        x_num = pd.to_numeric(x_clean, errors='coerce')
+                        y_num = pd.to_numeric(y_clean, errors='coerce')
+                        valid_numeric_mask = x_num.notna() & y_num.notna()
+                        x_num = x_num[valid_numeric_mask]
+                        y_num = y_num[valid_numeric_mask]
+                        if len(x_num) > 0:
+                            ax.scatter(x_num, y_num, alpha=0.6, color='blue')
+                            # 添加回歸線
+                            try:
+                                z = np.polyfit(x_num, y_num, 1)
+                                p = np.poly1d(z)
+                                ax.plot(x_num, p(x_num), "r--", alpha=0.8)
+                            except Exception:
+                                pass
+                        else:
+                            ax.text(0.5, 0.5, '無有效數值資料', ha='center', va='center', transform=ax.transAxes)
                     elif x_is_numeric and not y_is_numeric:
                         # 連續 vs 類別：箱線圖（垂直）
                         # x軸是連續型，y軸是類別型，但箱線圖需要按類別分組
                         categories = y_clean.unique()
-                        box_data = [x_clean[y_clean == cat].astype(float) for cat in categories]
-                        # ax.boxplot(box_data, labels=categories, axis='y')
-                        ax.boxplot(box_data, labels=categories, vert=False)
+                        x_num = pd.to_numeric(x_clean, errors='coerce')
+                        box_data = []
+                        box_labels = []
+                        for cat in categories:
+                            cat_values = x_num[y_clean == cat].dropna().astype(float)
+                            if len(cat_values) > 0:
+                                box_data.append(cat_values.values)
+                                box_labels.append(cat)
+                        if box_data:
+                            # ax.boxplot(box_data, labels=categories, axis='y')
+                            ax.boxplot(box_data, labels=box_labels, vert=False)
+                        else:
+                            ax.text(0.5, 0.5, '無有效數值資料', ha='center', va='center', transform=ax.transAxes)
                         # ax.tick_params(axis='x', rotation=45)
                         # # 軸標籤：x軸顯示類別，y軸顯示數值
                         # ax.set_xlabel(col_j, fontproperties=vs3.MJHfontprop())  # 類別軸
@@ -1035,9 +1271,19 @@ def drawCorrmap(df, stamps=None, handler=None, ret=None, mask=None, maskColumnNa
                         # 類別 vs 連續：箱線圖（垂直）
                         # x軸是類別型，y軸是連續型
                         categories = x_clean.unique()
-                        box_data = [y_clean[x_clean == cat].astype(float) for cat in categories]
-                        ax.boxplot(box_data, labels=categories, vert=True)
-                        ax.tick_params(axis='x', rotation=45)
+                        y_num = pd.to_numeric(y_clean, errors='coerce')
+                        box_data = []
+                        box_labels = []
+                        for cat in categories:
+                            cat_values = y_num[x_clean == cat].dropna().astype(float)
+                            if len(cat_values) > 0:
+                                box_data.append(cat_values.values)
+                                box_labels.append(cat)
+                        if box_data:
+                            ax.boxplot(box_data, labels=box_labels, vert=True)
+                            ax.tick_params(axis='x', rotation=45)
+                        else:
+                            ax.text(0.5, 0.5, '無有效數值資料', ha='center', va='center', transform=ax.transAxes)
                         # # 軸標籤：x軸顯示類別，y軸顯示數值
                         # ax.set_xlabel(col_j, fontproperties=vs3.MJHfontprop())  # 類別軸
                         # ax.set_ylabel(col_i, fontproperties=vs3.MJHfontprop())  # 數值軸
@@ -1116,6 +1362,31 @@ def drawCorrmap(df, stamps=None, handler=None, ret=None, mask=None, maskColumnNa
         LOGger.exception_process(e, logfile='', stamps=stamps)
         return False
 
+def _plot_correlation_memory_cleanup(ret=None, clear_ret_refs: bool = False):
+    """關閉 matplotlib 圖形並 gc；clear_ret_refs 僅建議背景 job 使用，避免影響同步流程讀取 ret。"""
+    try:
+        vs3.plt.close('all')
+    except Exception:
+        try:
+            matplotlib.pyplot.close('all')
+        except Exception:
+            pass
+    if clear_ret_refs and isinstance(ret, dict):
+        snsed = ret.get('snsed')
+        if snsed is not None and hasattr(snsed, 'fig'):
+            try:
+                snsed.fig.clf()
+            except Exception:
+                pass
+        for k in ('fig', 'snsed', 'pd_corr'):
+            if k in ret:
+                try:
+                    ret[k] = None
+                except Exception:
+                    pass
+    gc.collect()
+
+
 def plotCorrelationMonitorThreading(data, stamps=None, handler=None, exp_fd=None, file=None, numColor=None, 
                                     mask=None, height=5, ret=None, **kwags):
     """
@@ -1126,22 +1397,25 @@ def plotCorrelationMonitorThreading(data, stamps=None, handler=None, exp_fd=None
         thread_kwags = kwags.copy()
         thread_kwags['use_background'] = False  # 在線程中強制同步執行
         thread_kwags['background_async'] = False  # 禁用異步背景執行
-        
-        thd = LOGger.threading.Thread(
-            target=plotCorrelation, 
-            args=[data], 
-            kwargs={
-                'handler': handler, 
-                'stamps': stamps, 
-                'exp_fd': exp_fd, 
-                'file': file, 
-                'numColor': numColor,
-                'mask': mask, 
-                'height': height, 
-                'ret': ret,
-                **thread_kwags
-            }
-        )
+
+        def _run():
+            try:
+                plotCorrelation(
+                    data,
+                    handler=handler,
+                    stamps=stamps,
+                    exp_fd=exp_fd,
+                    file=file,
+                    numColor=numColor,
+                    mask=mask,
+                    height=height,
+                    ret=ret,
+                    **thread_kwags,
+                )
+            finally:
+                _plot_correlation_memory_cleanup(ret=ret, clear_ret_refs=bool(thread_kwags.get('plot_job_clear_ret')))
+
+        thd = LOGger.threading.Thread(target=_run, args=[])
         thd.daemon = True  # 設為守護線程，主程序結束時自動結束
         thd.start()
         LOGger.addDebug('plotCorrelationMonitorThreading start', stamps=stamps)
@@ -1154,10 +1428,33 @@ def plotCorrelationMonitorThreading(data, stamps=None, handler=None, exp_fd=None
 
 def plotCorrelation(data, stamps=None, handler=None, exp_fd=None, file=None, numColor=None, 
                           mask=None, height=5, ret=None, **kwags):
+    spill_to_disk = False
+    spill_keep_files = False
+    spill_store_obj = None
     try:
+        resolved = kwags.get('resolved_exp_fd')
+        if LOGger.isinstance_not_empty(resolved, str):
+            exp_fd = resolved
+
+        cancel_ev = kwags.get('job_cancel_event')
+        deadline = kwags.get('job_deadline_monotonic')
+
+        def _job_should_stop() -> bool:
+            if cancel_ev is not None and getattr(cancel_ev, 'is_set', lambda: False)():
+                return True
+            if deadline is not None and time.monotonic() > float(deadline):
+                return True
+            return False
+
+        spill_to_disk = bool(kwags.get("spill_to_disk", False))
+        spill_backend = str(kwags.get("spill_backend", "pkl") or "pkl").strip().lower()
+        spill_keep_files = bool(kwags.get("spill_keep_files", False))
+
         # 檢查資料量，如果超過閾值則使用背景執行和資源優化
         data_size_threshold = kwags.get('data_size_threshold', 10)
         use_background = kwags.get('use_background', None)  # None 表示自動判斷
+        if spill_to_disk:
+            use_background = False
         
         # 自動判斷是否使用背景執行
         if use_background is None:
@@ -1165,6 +1462,8 @@ def plotCorrelation(data, stamps=None, handler=None, exp_fd=None, file=None, num
         
         # 如果使用背景執行，直接返回（不等待完成）
         if use_background and kwags.get('background_async', True):
+            if _job_should_stop():
+                return False
             LOGger.addlog(f'資料量較大 (n={data.shape[0]})，使用背景執行繪圖', 
                         stamps=stamps, colora=LOGger.OKCYAN)
             return plotCorrelationMonitorThreading(
@@ -1205,10 +1504,76 @@ def plotCorrelation(data, stamps=None, handler=None, exp_fd=None, file=None, num
             import time
             time.sleep(0.05)  # 讓出 CPU 時間
         
-        corr = mic_matrix(data, n_jobs=n_jobs, use_fast_correlation=use_fast_correlation) #算MIC
+        if _job_should_stop():
+            return False
+
+        if spill_to_disk and spill_backend == "pkl" and LOGger.isinstance_not_empty(exp_fd, str):
+            try:
+                from package.spill_store import PklSpillStore
+                spill_root = os.path.join(str(exp_fd), "spill")
+                spill_store_obj = PklSpillStore.from_dataframe(data, spill_root)
+            except Exception as e:
+                LOGger.exception_process(e, logfile='', stamps=stamps)
+                m_print(f"spill_to_disk 失敗，改用記憶體路徑: {e}", stamps=stamps, colora=LOGger.FAIL)
+                spill_to_disk = False
+                spill_store_obj = None
+            if spill_to_disk and spill_store_obj is not None:
+                try:
+                    del data
+                except Exception:
+                    pass
+                data = None
+                gc.collect()
+                corr = mic_matrix(
+                    None,
+                    n_jobs=n_jobs,
+                    use_fast_correlation=use_fast_correlation,
+                    job_cancel_event=cancel_ev,
+                    job_deadline_monotonic=deadline,
+                    on_worker_pids=kwags.get('plot_job_register_worker_pids'),
+                    on_cancelled_futures=kwags.get('plot_job_note_cancelled_futures'),
+                    on_killed_workers=kwags.get('plot_job_note_killed_workers'),
+                    on_cleanup_error=kwags.get('plot_job_note_cleanup_error'),
+                    spill_store=spill_store_obj,
+                )
+            else:
+                corr = mic_matrix(
+                    data,
+                    n_jobs=n_jobs,
+                    use_fast_correlation=use_fast_correlation,
+                    job_cancel_event=cancel_ev,
+                    job_deadline_monotonic=deadline,
+                    on_worker_pids=kwags.get('plot_job_register_worker_pids'),
+                    on_cancelled_futures=kwags.get('plot_job_note_cancelled_futures'),
+                    on_killed_workers=kwags.get('plot_job_note_killed_workers'),
+                    on_cleanup_error=kwags.get('plot_job_note_cleanup_error'),
+                )
+        else:
+            if spill_to_disk and spill_backend != "pkl":
+                m_print(
+                    f"spill_to_disk 僅實作 backend=pkl，目前為 {spill_backend!r}，改走記憶體",
+                    colora=LOGger.WARNING,
+                )
+            corr = mic_matrix(
+                data,
+                n_jobs=n_jobs,
+                use_fast_correlation=use_fast_correlation,
+                job_cancel_event=cancel_ev,
+                job_deadline_monotonic=deadline,
+                on_worker_pids=kwags.get('plot_job_register_worker_pids'),
+                on_cancelled_futures=kwags.get('plot_job_note_cancelled_futures'),
+                on_killed_workers=kwags.get('plot_job_note_killed_workers'),
+                on_cleanup_error=kwags.get('plot_job_note_cleanup_error'),
+            )
+
+        if spill_to_disk and spill_store_obj is not None and data is None:
+            data = spill_store_obj.to_dataframe()
+
+        if corr is None or _job_should_stop():
+            return False
         
         # 休息點 2：計算 MIC 後
-        if data.shape[0] > data_size_threshold:
+        if data is not None and data.shape[0] > data_size_threshold:
             time.sleep(0.05)  # 讓出 CPU 時間
         
         # 將corr轉換為numpy數組
@@ -1221,9 +1586,12 @@ def plotCorrelation(data, stamps=None, handler=None, exp_fd=None, file=None, num
         corr_values = corr.values if hasattr(corr, 'values') else corr
         
         # 休息點 3：繪圖前
-        if data.shape[0] > data_size_threshold:
+        if data is not None and data.shape[0] > data_size_threshold:
             time.sleep(0.05)  # 讓出 CPU 時間
         
+        if _job_should_stop():
+            return False
+
         if(not drawCorrmap(data, stamps=stamps, mask=mask, height=height, corr=corr_values, ret=ret,
                                          facecolorDyeMethod=get_title_bgcolor, suptitle='n:%s'%(data.shape[0]), **kwags)):
             return False
@@ -1245,6 +1613,16 @@ def plotCorrelation(data, stamps=None, handler=None, exp_fd=None, file=None, num
         LOGger.exception_process(e, logfile='', stamps=stamps)
         return False
     finally:
+        try:
+            if spill_to_disk and (not spill_keep_files) and spill_store_obj is not None:
+                spill_store_obj.cleanup()
+        except Exception:
+            pass
+        _plot_correlation_memory_cleanup(
+            ret=ret,
+            clear_ret_refs=bool(kwags.get('plot_job_clear_ret')),
+        )
+        _safe_cleanup_callback(kwags.get('plot_job_note_memory_cleared'))
         LOGger.addDebug('plotCorrelation over!!!!')
 
 def plotRegressionHeatmap(data, stamps=None, handler=None, exp_fd=None, file=None, numColor=None, 

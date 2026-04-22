@@ -3,13 +3,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import os
 import sys
 import json
 import math
+import time
+import queue
+import threading
+import asyncio
+import concurrent.futures
 import numpy as np
 import pandas as pd
+import openpyxl
 
 # 加入當前目錄到 Python 路徑
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +53,12 @@ config = load_config()
 import DataAnalysis as DA
 from package import dataframeprocedure as DFP
 from src import heteroscedastic as het_instability
+from src import header_zone_resolver as hz_resolver
+from src import plot_correlation_job_registry as pc_job_registry
+try:
+    from src.discrete_aggregator import aggregate_discrete_data
+except Exception:
+    aggregate_discrete_data = None
 
 app = FastAPI(
     title="DataAnalysis API",
@@ -136,6 +148,19 @@ class CorrelationRequest(FilePathRequest):
     stamps: Optional[List[str]] = None
     ret: Optional[Dict[str, Any]] = {}
     data_config_file: Optional[str] = None
+    exclude_headers: Optional[List[str]] = None
+    # /plot-correlation：預設非阻塞 job；async_job=False 時維持同步行為
+    async_job: Optional[bool] = None
+    # 背景 job 逾時（秒）；未傳則用環境變數 DATAANALYSIS_JOB_TIMEOUT_SEC（0 表不限制）
+    timeout_sec: Optional[float] = None
+    # MIC 進程池 workers；未傳時僅 /plot-correlation 有專用預設，再經 data_analysis.resolve_mic_n_jobs 收斂
+    n_jobs: Optional[int] = None
+    # 是否先做離散類別聚合（/plot-correlation 專用；預設關閉）
+    isAggregate: Optional[bool] = False
+    # spill-to-disk：MIC 前欄位分檔、釋放 DataFrame；目前僅後端 pkl
+    spill_to_disk: Optional[bool] = False
+    spill_backend: Optional[str] = "pkl"
+    spill_keep_files: Optional[bool] = False
 
 class DataParsingRequest(FilePathRequest):
     ret: Optional[Dict[str, Any]] = {}
@@ -157,6 +182,11 @@ class StandardTestsRequest(FilePathRequest):
     use_api: Optional[bool] = False
     plan_id: Optional[str] = None
     seq_no: Optional[str] = None
+    # 檢定容入規格（issues/檢定容入規格判斷.iss）；未傳 tol 時行為與舊版一致
+    tol: Optional[float] = None
+    spec_mode: Optional[str] = "tost"
+    confidence: Optional[float] = 0.95
+    p_adjust: Optional[str] = "holm"
 
 class PointsRequest(FilePathRequest):
     columns: List[str]                      # 要取出的欄位（2D: [x,y], 3D: [x1,x2,y]）
@@ -380,8 +410,41 @@ def safe_serialize(obj, max_depth=3, current_depth=0, _seen=None, **kwags):
             if current_depth == 0:
                 m_print(f'[safe_serialize] 序列化完成', colora=LOGger.OKGREEN)
 
+def _normalize_excel_sheet_arg(full_path: str, sheet: Any) -> Any:
+    """將 xlsx 的整數分頁索引轉成分頁名稱，避免 import_data 以字串比對時回退第一張。"""
+    ext = os.path.splitext(str(full_path))[1].lower()
+    if ext not in ('.xlsx', '.xlsm', '.xltx', '.xltm'):
+        return sheet
+    if isinstance(sheet, bool) or not isinstance(sheet, int):
+        return sheet
+
+    book = None
+    try:
+        book = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
+        sheetnames = list(book.sheetnames or [])
+        if not sheetnames:
+            raise HTTPException(status_code=400, detail="Excel 沒有任何分頁")
+
+        idx = int(sheet)
+        if idx < 0:
+            idx = len(sheetnames) + idx
+        if idx < 0 or idx >= len(sheetnames):
+            raise HTTPException(
+                status_code=400,
+                detail=f"sheet 索引超出範圍: {sheet}（有效範圍 0~{len(sheetnames)-1}）",
+            )
+
+        return sheetnames[idx]
+    finally:
+        if book is not None:
+            try:
+                book.close()
+            except Exception:
+                pass
+
+
 # 通用資料載入函數
-def load_data(file_path: str, sheet: int = 0):
+def load_data(file_path: str, sheet: Any = 0):
     """載入資料檔案"""
     try:
         # 如果檔案路徑不是絕對路徑，則從 source_dir 開始尋找
@@ -410,14 +473,306 @@ def load_data(file_path: str, sheet: int = 0):
             if not found:
                 raise HTTPException(status_code=404, detail=f"檔案不存在: {file_path}")
         
-        data = DFP.import_data(full_path, sht=sheet)
+        sheet_for_import = _normalize_excel_sheet_arg(full_path, sheet)
+        data = DFP.import_data(full_path, sht=sheet_for_import)
         if data is None:
             raise HTTPException(status_code=400, detail="無法載入資料檔案")
         
         return data
+    except HTTPException:
+        raise
     except Exception as e:
         LOGger.exception_process(e, logfile='', stamps=['load_data'])
         raise HTTPException(status_code=500, detail=f"載入資料時發生錯誤: {str(e)}")
+
+
+def apply_exclude_headers(data: pd.DataFrame, exclude_headers: Optional[List[str]], log_tag: str) -> pd.DataFrame:
+    """排除指定欄位，並保證至少保留一個欄位。"""
+    if not isinstance(exclude_headers, list) or not exclude_headers:
+        return data
+
+    normalized_excludes = [h for h in exclude_headers if isinstance(h, str) and h.strip()]
+    existing_excludes = [h for h in normalized_excludes if h in data.columns]
+    missing_excludes = [h for h in normalized_excludes if h not in data.columns]
+
+    if existing_excludes:
+        m_print(f'[{log_tag}] 排除欄位: {existing_excludes}', colora=LOGger.OKGREEN)
+        data = data.drop(columns=existing_excludes)
+    if missing_excludes:
+        m_print(f'[{log_tag}] 以下欄位不存在，略過排除: {missing_excludes}', colora=LOGger.WARNING)
+
+    if data.shape[1] == 0:
+        raise HTTPException(status_code=400, detail="排除欄位後已無可分析欄位")
+    return data
+
+
+def _resolve_plot_correlation_exp_fd(exp_fd: Optional[str]) -> Tuple[str, str]:
+    """回傳 (requested, resolved_absolute)；相對路徑以 API 程序 cwd 為基準轉成絕對路徑。"""
+    requested = exp_fd if (exp_fd is not None and str(exp_fd).strip()) else os.path.join("tmp", "micCorr")
+    requested = str(requested).strip()
+    if os.path.isabs(requested):
+        resolved = os.path.normpath(requested)
+    else:
+        resolved = os.path.abspath(os.path.join(os.getcwd(), requested))
+    return requested, resolved
+
+
+def _effective_plot_job_timeout_sec(request: CorrelationRequest) -> float:
+    if request.timeout_sec is not None:
+        try:
+            return max(0.0, float(request.timeout_sec))
+        except (TypeError, ValueError):
+            return 0.0
+    return pc_job_registry.default_job_timeout_sec()
+
+
+def _plot_correlation_api_intent_n_jobs(request: CorrelationRequest) -> int:
+    """
+    僅 /plot-correlation：未傳 n_jobs 時採用 max(min(cpu-1, 4), 1)，再交給 resolve_mic_n_jobs。
+    """
+    from package.data_analysis import resolve_mic_n_jobs
+
+    c = max(1, (os.cpu_count() or 1))
+    default_w = max(min(c - 1, 4), 1)
+    if request.n_jobs is None:
+        raw = default_w
+    else:
+        try:
+            raw = int(request.n_jobs)
+        except (TypeError, ValueError):
+            raw = default_w
+    return int(resolve_mic_n_jobs(raw))
+
+
+def _plot_correlation_cpu_gate() -> None:
+    """若「可用平行度 cpu-1 < 4」時，待 CPU 較空再執行（有 psutil 則看 cpu_percent）。"""
+    c = max(1, (os.cpu_count() or 1))
+    if c - 1 >= 4:
+        return
+    try:
+        import psutil  # type: ignore
+        for _ in range(200):
+            if float(psutil.cpu_percent(interval=0.2)) < 78.0:
+                return
+    except Exception:
+        time.sleep(0.2)
+
+
+_PLOT_CORR_TASK_QUEUE = queue.Queue()
+_PLOT_CORR_WORKER_LOCK = threading.Lock()
+_PLOT_CORR_WORKER_STARTED = False
+
+
+def _plot_correlation_queue_loop() -> None:
+    while True:
+        try:
+            job_id, payload = _PLOT_CORR_TASK_QUEUE.get()
+        except Exception:
+            continue
+        _plot_correlation_cpu_gate()
+        _plot_correlation_job_thread_entry(job_id, payload)
+        try:
+            _PLOT_CORR_TASK_QUEUE.task_done()
+        except Exception:
+            pass
+
+
+def _ensure_plot_correlation_queue_worker() -> None:
+    global _PLOT_CORR_WORKER_STARTED
+    with _PLOT_CORR_WORKER_LOCK:
+        if _PLOT_CORR_WORKER_STARTED:
+            return
+        t = threading.Thread(
+            target=_plot_correlation_queue_loop,
+            daemon=True,
+            name="plot-corr-queue-worker",
+        )
+        t.start()
+        _PLOT_CORR_WORKER_STARTED = True
+
+
+def _prepare_plot_correlation_dataframe(request: CorrelationRequest) -> pd.DataFrame:
+    """載入並套用 data_config_file / exclude_headers（與 /plot-correlation 原本邏輯一致）。"""
+    data = load_data(request.filePath, request.sheet)
+
+    if request.data_config_file:
+        selected_header = None
+        m_print(f'[plot_correlation] 載入配置檔案: {request.data_config_file}', colora=LOGger.OKGREEN)
+        data_config = LOGger.load_json(request.data_config_file)
+        m_print(f'[plot_correlation] 配置檔案內容: {list(data_config.keys()) if isinstance(data_config, dict) else "非字典格式"}', colora=LOGger.OKGREEN)
+        if isinstance(data_config, dict):
+            selected_header = data_config.get('selected_header')
+            m_print(f'[plot_correlation] selected_header: {selected_header}', colora=LOGger.OKCYAN)
+            if not selected_header and 'HEADER' in data_config:
+                header_config = data_config.get('HEADER', {})
+                m_print(f'[plot_correlation] HEADER 配置: {header_config}', colora=LOGger.OKCYAN)
+                if header_config:
+                    header_names = []
+                    for key, value in header_config.items():
+                        if isinstance(value, str) and value:
+                            header_names.append(value)
+                    if header_names:
+                        selected_header = header_names
+                        m_print(f'[plot_correlation] 從 HEADER 提取的欄位: {header_names}', colora=LOGger.OKGREEN)
+        if isinstance(selected_header, list):
+            available_headers = [h for h in selected_header if h in data.columns]
+            if available_headers:
+                m_print(f'[plot_correlation] 使用選取的欄位: {available_headers}', colora=LOGger.OKGREEN)
+                data = data[available_headers]
+            else:
+                m_print(f'[plot_correlation] 警告: 配置的欄位都不存在於資料中: {selected_header}', colora=LOGger.WARNING)
+
+    data = apply_exclude_headers(data, request.exclude_headers, log_tag='plot_correlation')
+    return data
+
+
+def _apply_plot_correlation_aggregation(
+    data: pd.DataFrame,
+    request: CorrelationRequest,
+    output_dir: str,
+) -> pd.DataFrame:
+    """依 isAggregate 開關決定是否先做離散類別聚合。"""
+    if not bool(getattr(request, "isAggregate", False)):
+        return data
+
+    if aggregate_discrete_data is None:
+        m_print('[plot_correlation] isAggregate=True 但 discrete_aggregator 無法載入，改用原始資料', colora=LOGger.WARNING)
+        return data
+
+    try:
+        try:
+            # 若當前執行緒已有 event loop（例如 async endpoint），改用子執行緒包 asyncio.run
+            asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                fut = executor.submit(asyncio.run, aggregate_discrete_data(data, exp_fd=output_dir))
+                aggregated_data, aggregation_results = fut.result()
+        except RuntimeError:
+            # 無 event loop 時直接 run
+            aggregated_data, aggregation_results = asyncio.run(
+                aggregate_discrete_data(data, exp_fd=output_dir)
+            )
+
+        agg_count = len([
+            r for r in (aggregation_results or [])
+            if isinstance(r, dict) and r.get('aggregated')
+        ])
+        m_print(
+            f'[plot_correlation] 離散聚合完成，aggregated_columns={agg_count}',
+            colora=LOGger.OKCYAN,
+        )
+        if isinstance(request.ret, dict):
+            request.ret['aggregation_results'] = aggregation_results
+        return aggregated_data
+    except Exception as e:
+        LOGger.exception_process(e, logfile='', stamps=['plot_correlation', 'aggregate'])
+        m_print(f'[plot_correlation] 離散聚合失敗，改用原始資料: {e}', colora=LOGger.WARNING)
+        return data
+
+
+def _plot_correlation_execute_job(job_id: str, request: CorrelationRequest) -> None:
+    """背景執行 MIC 繪圖（單一 worker 內強制同步 plotCorrelation，避免再開內層背景線程）。"""
+    timer: Optional[threading.Timer] = None
+    try:
+        job = pc_job_registry.get_job(job_id)
+        if not job:
+            return
+
+        if job.status == "cancelled" or job.cancel_event.is_set():
+            return
+
+        if job.timeout_sec and float(job.timeout_sec) > 0:
+            timer = threading.Timer(
+                float(job.timeout_sec),
+                lambda jid=job_id: pc_job_registry.try_mark_timeout(jid),
+            )
+            timer.daemon = True
+            timer.start()
+            pc_job_registry.set_job_timer(job_id, timer)
+
+        pc_job_registry.mark_running(job_id)
+        job = pc_job_registry.get_job(job_id)
+        if not job or job.status == "cancelled" or job.cancel_event.is_set():
+            return
+
+        try:
+            data = _prepare_plot_correlation_dataframe(request)
+        except HTTPException as he:
+            pc_job_registry.try_mark_failed(job_id, str(he.detail))
+            return
+        except Exception as e:
+            pc_job_registry.try_mark_failed(job_id, str(e))
+            return
+
+        job = pc_job_registry.get_job(job_id)
+        if not job or job.status in ("failed", "cancelled"):
+            return
+
+        os.makedirs(job.resolved_exp_fd, exist_ok=True)
+        data = _apply_plot_correlation_aggregation(data, request, job.resolved_exp_fd)
+
+        deadline = None
+        if job.timeout_sec and float(job.timeout_sec) > 0:
+            deadline = time.monotonic() + float(job.timeout_sec)
+
+        n_eff = int(getattr(job, "effective_n_jobs", 1) or 1)
+        m_addlog(
+            f"/plot-correlation job_id={job_id} state=run effective_n_jobs={n_eff} path={job.resolved_exp_fd}",
+            stamps=['plot_correlation', 'job', str(job_id)],
+            colora=LOGger.OKCYAN,
+        )
+        ret: Dict[str, Any] = request.ret if isinstance(request.ret, dict) else {}
+        ok = DA.PlotCorrelation(
+            matrix=data,
+            method=request.method or "mic",
+            exp_fd=job.resolved_exp_fd,
+            stamps=request.stamps,
+            ret=ret,
+            n_jobs=n_eff,
+            use_background=False,
+            background_async=False,
+            resolved_exp_fd=job.resolved_exp_fd,
+            job_cancel_event=job.cancel_event,
+            job_deadline_monotonic=deadline,
+            plot_job_clear_ret=True,
+            spill_to_disk=bool(getattr(request, "spill_to_disk", False)),
+            spill_backend=str(getattr(request, "spill_backend", "pkl") or "pkl"),
+            spill_keep_files=bool(getattr(request, "spill_keep_files", False)),
+            plot_job_register_worker_pids=(lambda pids, jid=job_id: pc_job_registry.set_worker_pids(jid, pids)),
+            plot_job_note_cancelled_futures=(lambda n, jid=job_id: pc_job_registry.note_cancelled_futures(jid, n)),
+            plot_job_note_killed_workers=(lambda n, jid=job_id: pc_job_registry.note_killed_workers(jid, n)),
+            plot_job_note_memory_cleared=(lambda jid=job_id: pc_job_registry.note_memory_cleared(jid)),
+            plot_job_note_cleanup_error=(lambda msg, jid=job_id: pc_job_registry.note_cleanup_error(jid, msg)),
+        )
+
+        jcur = pc_job_registry.get_job(job_id)
+        if jcur and jcur.error == "job_timeout":
+            return
+
+        if not ok:
+            if jcur and jcur.cancel_event.is_set():
+                pc_job_registry.try_mark_failed(job_id, "cancelled")
+            else:
+                pc_job_registry.try_mark_failed(job_id, "PlotCorrelation returned False")
+            return
+
+        outs = pc_job_registry.scan_correlation_output_files(job.resolved_exp_fd)
+        pc_job_registry.try_mark_success(job_id, outs)
+    finally:
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        pc_job_registry.clear_job_timer(job_id)
+
+
+def _plot_correlation_job_thread_entry(job_id: str, payload: Dict[str, Any]) -> None:
+    try:
+        req = CorrelationRequest(**payload)
+    except Exception as e:
+        pc_job_registry.try_mark_failed(job_id, f"invalid request payload: {e}")
+        return
+    _plot_correlation_execute_job(job_id, req)
 
 # 前端模板路由
 @app.get("/index.html", response_class=HTMLResponse)
@@ -544,6 +899,71 @@ async def get_config():
         "reference_dirs": config.get("referenceDirs", []),
         "gpu_memory_limit": config.get("gpuMemoLimit", 10000)
     }
+
+
+def _resolve_xy_core(
+        config_path: Optional[str] = None,
+        default_data_path: Optional[str] = None,
+        model_config_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """issues/動態互動對齊AIAPI.iss 第 4 節：合併設定並解析 x/y。"""
+    try:
+        merged = hz_resolver.merge_config_sources(
+            config_path=config_path,
+            default_data_path=default_data_path,
+            model_config_path=model_config_path,
+        )
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    ok, msg = hz_resolver.validate_config_dict(merged)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    resolved = hz_resolver.extract_xy_from_config(merged, config_path=config_path)
+    ser = safe_serialize(resolved, max_depth=8)
+    if isinstance(ser, dict):
+        return {"success": True, **ser}
+    return {"success": True, "res": ser}
+
+
+@app.get("/config/resolve-xy")
+async def config_resolve_xy(
+        config_path: Optional[str] = None,
+        default_data_path: Optional[str] = None,
+        model_config_path: Optional[str] = None,
+):
+    """回傳 input_file、x_cols、y_col、xheader_zones、yheader_zones、config_path 等（骨架）。"""
+    try:
+        return _resolve_xy_core(
+            config_path=config_path,
+            default_data_path=default_data_path,
+            model_config_path=model_config_path,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        LOGger.exception_process(e, logfile='', stamps=['config_resolve_xy'])
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/project-params")
+async def project_params(
+        config_path: Optional[str] = None,
+        default_data_path: Optional[str] = None,
+        model_config_path: Optional[str] = None,
+):
+    """別名，與 GET /config/resolve-xy 相同（issues/動態互動對齊AIAPI.iss）。"""
+    try:
+        return _resolve_xy_core(
+            config_path=config_path,
+            default_data_path=default_data_path,
+            model_config_path=model_config_path,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        LOGger.exception_process(e, logfile='', stamps=['project_params'])
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/files")
 async def list_files(directory: Optional[str] = None):
@@ -690,58 +1110,125 @@ async def search_file(filename: str):
 
 @app.post("/plot-correlation")
 async def plot_correlation(request: CorrelationRequest):
-    """繪製相關性圖表"""
+    """繪製相關性圖表。預設非阻塞：立即回傳 job_id；async_job=false 時同步完成（舊行為）。"""
     try:
-        data = load_data(request.filePath, request.sheet)
-        
-        if request.data_config_file:
-            selected_header = None
-            m_print(f'[plot_correlation] 載入配置檔案: {request.data_config_file}', colora=LOGger.OKGREEN)
-            data_config = LOGger.load_json(request.data_config_file)
-            m_print(f'[plot_correlation] 配置檔案內容: {list(data_config.keys()) if isinstance(data_config, dict) else "非字典格式"}', colora=LOGger.OKGREEN)
-            if isinstance(data_config, dict):
-                # 優先使用 selected_header
-                selected_header = data_config.get('selected_header')
-                m_print(f'[plot_correlation] selected_header: {selected_header}', colora=LOGger.OKCYAN)
-                # 如果沒有 selected_header，從 HEADER 配置中提取
-                if not selected_header and 'HEADER' in data_config:
-                    header_config = data_config.get('HEADER', {})
-                    m_print(f'[plot_correlation] HEADER 配置: {header_config}', colora=LOGger.OKCYAN)
-                    if header_config:
-                        header_names = []
-                        for key, value in header_config.items():
-                            if isinstance(value, str) and value:
-                                header_names.append(value)
-                        if header_names:
-                            selected_header = header_names
-                            m_print(f'[plot_correlation] 從 HEADER 提取的欄位: {header_names}', colora=LOGger.OKGREEN)
-            if isinstance(selected_header, list):
-                # 只保留存在於資料中的欄位
-                available_headers = [h for h in selected_header if h in data.columns]
-                if available_headers:
-                    m_print(f'[plot_correlation] 使用選取的欄位: {available_headers}', colora=LOGger.OKGREEN)
-                    data = data[available_headers]
-                else:
-                    m_print(f'[plot_correlation] 警告: 配置的欄位都不存在於資料中: {selected_header}', colora=LOGger.WARNING)
-        # 設定預設輸出目錄
-        exp_fd = request.exp_fd or os.path.join('tmp', 'micCorr')
-        
-        result = DA.PlotCorrelation(
-            matrix=data,
-            method=request.method,
-            exp_fd=exp_fd,
-            stamps=request.stamps,
-            ret=request.ret
+        requested_dir, resolved_dir = _resolve_plot_correlation_exp_fd(
+            request.exp_fd or os.path.join("tmp", "micCorr")
         )
-        
+
+        use_async = True if request.async_job is None else bool(request.async_job)
+        eff_nj = _plot_correlation_api_intent_n_jobs(request)
+        if not use_async:
+            data = _prepare_plot_correlation_dataframe(request)
+            data = _apply_plot_correlation_aggregation(data, request, resolved_dir)
+            result = DA.PlotCorrelation(
+                matrix=data,
+                method=request.method,
+                exp_fd=resolved_dir,
+                stamps=request.stamps,
+                ret=request.ret,
+                n_jobs=eff_nj,
+                use_background=False,
+                background_async=False,
+                resolved_exp_fd=resolved_dir,
+                spill_to_disk=bool(getattr(request, "spill_to_disk", False)),
+                spill_backend=str(getattr(request, "spill_backend", "pkl") or "pkl"),
+                spill_keep_files=bool(getattr(request, "spill_keep_files", False)),
+            )
+            return {
+                "success": result,
+                "accepted": False,
+                "message": "相關性圖表繪製完成" if result else "相關性圖表繪製失敗",
+                "output_directory": resolved_dir,
+                "requested_output_directory": requested_dir,
+                "resolved_output_directory": resolved_dir,
+                "effective_n_jobs": eff_nj,
+            }
+
+        timeout_applied = _effective_plot_job_timeout_sec(request)
+        job = pc_job_registry.create_job(
+            requested_dir,
+            resolved_dir,
+            effective_n_jobs=eff_nj,
+            method=str(request.method or "mic"),
+            file_path=str(request.filePath),
+            sheet=request.sheet,
+            timeout_sec=timeout_applied,
+        )
+        try:
+            payload = request.model_dump()
+        except AttributeError:
+            payload = request.dict()
+
+        m_addlog(
+            f"/plot-correlation 已入列 job_id={job.job_id} effective_n_jobs={eff_nj} base={resolved_dir} workdir={job.resolved_exp_fd}",
+            stamps=['plot_correlation', 'job', str(job.job_id)],
+            colora=LOGger.OKCYAN,
+        )
+        _ensure_plot_correlation_queue_worker()
+        _PLOT_CORR_TASK_QUEUE.put((job.job_id, payload))
+
         return {
-            "success": result,
-            "message": "相關性圖表繪製完成" if result else "相關性圖表繪製失敗",
-            "output_directory": exp_fd
+            "success": True,
+            "accepted": True,
+            "job_id": job.job_id,
+            "message": "已入列背景繪圖佇列，請以 job_id 查詢 /plot-correlation/status/{job_id}",
+            "requested_output_directory": requested_dir,
+            "resolved_output_directory": job.resolved_exp_fd,
+            "output_directory": job.resolved_exp_fd,
+            "timeout_sec": timeout_applied,
+            "effective_n_jobs": eff_nj,
         }
     except Exception as e:
         LOGger.exception_process(e, logfile='', stamps=['plot_correlation'])
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/plot-correlation/status/{job_id}")
+async def plot_correlation_status(job_id: str):
+    """查詢 /plot-correlation 背景任務狀態與輸出檔案。"""
+    job = pc_job_registry.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_id 不存在")
+    cleanup = pc_job_registry.get_cleanup_snapshot(job_id)
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "error": job.error,
+        "requested_output_directory": job.requested_exp_fd,
+        "resolved_output_directory": job.resolved_exp_fd,
+        "output_files": list(job.output_files),
+        "started_at": job.started_at,
+        "ended_at": job.ended_at,
+        "effective_n_jobs": int(getattr(job, "effective_n_jobs", 1) or 1),
+        "cleanup": cleanup,
+    }
+
+
+@app.get("/plot-correlation/jobs")
+async def plot_correlation_jobs_list():
+    """列出 in-memory 中的 plot-correlation 任務摘要。"""
+    return {
+        "success": True,
+        "jobs": pc_job_registry.list_all_job_summaries(),
+    }
+
+
+@app.post("/plot-correlation/jobs/{job_id}/cancel")
+async def plot_correlation_cancel(job_id: str):
+    """中止背景任務（最佳努力；MIC 計算中無法強制中斷）。"""
+    ok = pc_job_registry.request_cancel(job_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="job_id 不存在")
+    job = pc_job_registry.get_job(job_id)
+    cleanup = pc_job_registry.get_cleanup_snapshot(job_id)
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": getattr(job, "status", "unknown"),
+        "message": "已送出取消",
+        "cleanup": cleanup,
+    }
 
 @app.post("/calculate-correlation")
 async def calculate_correlation(request: CorrelationRequest):
@@ -777,6 +1264,7 @@ async def calculate_correlation(request: CorrelationRequest):
                     data = data[available_headers]
                 else:
                     m_print(f'[calculate_correlation] 警告: 配置的欄位都不存在於資料中: {selected_header}', colora=LOGger.WARNING)
+        data = apply_exclude_headers(data, request.exclude_headers, log_tag='calculate_correlation')
 
         # 設定預設輸出目錄
         exp_fd = request.exp_fd or os.path.join('tmp', 'micCorr')
@@ -820,9 +1308,7 @@ async def calculate_correlation(request: CorrelationRequest):
 async def data_parsing(request: DataParsingRequest):
     """資料解析"""
     try:
-        data = load_data(request.filePath, request.sheet)
-        
-        result = DA.DataParsingFromFile(data, ret=request.ret)
+        result = DA.DataParsingFromFile(request.filePath, ret=request.ret, sht=request.sheet)
         
         # 使用安全序列化
         serializable_ret = safe_serialize(request.ret)
@@ -1392,7 +1878,11 @@ async def standard_tests(request: StandardTestsRequest):
             output_dir=request.output_dir or os.path.join('tmp', 'distribution_results'),
             use_api=request.use_api,
             plan_id=request.plan_id,
-            seq_no=request.seq_no
+            seq_no=request.seq_no,
+            tol=request.tol,
+            spec_mode=request.spec_mode,
+            confidence=request.confidence,
+            p_adjust=request.p_adjust,
         )
         
         # 執行標準檢定
@@ -1415,6 +1905,262 @@ def _instability_resolve_output_dir(request: InstabilityBaseRequest) -> str:
     return request.output_dir or m_instability_api_output_default
 
 
+def _plotly_scalar(v):
+    if v is None:
+        return None
+    if isinstance(v, (pd.Timestamp,)):
+        try:
+            return v.isoformat()
+        except Exception:
+            return str(v)
+    if isinstance(v, (np.integer, int)):
+        try:
+            return int(v)
+        except Exception:
+            return None
+    if isinstance(v, (np.floating, float)):
+        try:
+            vf = float(v)
+            return vf if np.isfinite(vf) else None
+        except Exception:
+            return None
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    return v
+
+
+def _plotly_as_float(v):
+    try:
+        vf = float(v)
+        return vf if np.isfinite(vf) else None
+    except Exception:
+        return None
+
+
+def _build_instability_plotly_payload(
+    df: pd.DataFrame,
+    payload: Dict[str, Any],
+    x_col: str,
+    y_col: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    extra = extra or {}
+    try:
+        sample_n = int(extra.get("plotly_sample_n", 3000))
+    except Exception:
+        sample_n = 3000
+    sample_n = max(1, min(sample_n, 20000))
+
+    try:
+        seed = int(extra.get("plotly_seed", 7))
+    except Exception:
+        seed = 7
+
+    if x_col not in df.columns or y_col not in df.columns:
+        return None
+
+    sub = df[[x_col, y_col]].copy()
+    sub = sub.dropna(subset=[x_col, y_col])
+    if sub.empty:
+        return None
+
+    # y 軸以數值為主；無法轉數值者略過
+    y_numeric = pd.to_numeric(sub[y_col], errors="coerce")
+    sub = sub.loc[y_numeric.notna()].copy()
+    if sub.empty:
+        return None
+    sub[y_col] = y_numeric.loc[sub.index].astype(float)
+
+    if len(sub) > sample_n:
+        rng = np.random.default_rng(seed)
+        idx = rng.choice(len(sub), size=sample_n, replace=False)
+        sub = sub.iloc[idx]
+
+    x_vals = []
+    y_vals = []
+    for xv, yv in zip(sub[x_col].tolist(), sub[y_col].tolist()):
+        xs = _plotly_scalar(xv)
+        ys = _plotly_as_float(yv)
+        if ys is None:
+            continue
+        x_vals.append(xs)
+        y_vals.append(ys)
+    if not y_vals:
+        return None
+
+    def _trace_axis_name(axis_prefix: str, row_idx: int) -> str:
+        return axis_prefix if row_idx == 1 else f"{axis_prefix}{row_idx}"
+
+    traces: List[Dict[str, Any]] = []
+    row_titles: List[str] = [f"{x_col} vs {y_col}"]
+    row_specs: List[Dict[str, Any]] = [{"y_title": y_col}]
+
+    traces.append({
+        "type": "scattergl",
+        "mode": "markers",
+        "name": f"{x_col} vs {y_col}",
+        "x": x_vals,
+        "y": y_vals,
+        "xaxis": _trace_axis_name("x", 1),
+        "yaxis": _trace_axis_name("y", 1),
+        "marker": {
+            "size": 5,
+            "color": "#66e3ff",
+            "opacity": 0.42,
+            "line": {"width": 0},
+        },
+        "hovertemplate": f"{x_col}=%{{x}}<br>{y_col}=%{{y}}<extra></extra>",
+    })
+
+    layer_preview = payload.get("layers_table_preview")
+    if isinstance(layer_preview, list) and len(layer_preview) > 1:
+        ordered = [r for r in layer_preview if isinstance(r, dict) and (x_col in r)]
+        x_numeric = bool(ordered) and all(_plotly_as_float(r.get(x_col)) is not None for r in ordered)
+        if x_numeric:
+            ordered = sorted(ordered, key=lambda r: _plotly_as_float(r.get(x_col)))
+
+        grouped_candidates = [
+            ("Layer1 sigma (preview)", "Layer1 sigma", [("layer1_instability_sigma", "Layer1 sigma", "#7dd3fc")]),
+            ("Layer2 sigma/tol (preview)", "Layer2 sigma/tol", [("layer2_instability_sigma_vs_tol", "Layer2 sigma/tol", "#fbbf24")]),
+            ("Layer3 score/stability (preview)", "Layer3 metric", [
+                ("layer3_instability_score", "Layer3 score", "#f87171"),
+                ("layer3_stability_score", "Layer3 stability", "#86efac"),
+            ]),
+        ]
+
+        for panel_title, y_title, candidates in grouped_candidates:
+            panel_traces: List[Dict[str, Any]] = []
+            for col, name, color in candidates:
+                points = []
+                for row in ordered:
+                    xv = _plotly_scalar(row.get(x_col))
+                    yv = _plotly_as_float(row.get(col))
+                    if yv is None:
+                        continue
+                    points.append((xv, yv))
+                if len(points) < 2:
+                    continue
+                panel_traces.append({
+                    "type": "scatter",
+                    "mode": "lines+markers",
+                    "name": f"{name} (preview)",
+                    "x": [p[0] for p in points],
+                    "y": [p[1] for p in points],
+                    "marker": {"size": 5, "color": color},
+                    "line": {"width": 2, "color": color},
+                    "hovertemplate": f"{x_col}=%{{x}}<br>{name}=%{{y}}<extra></extra>",
+                })
+            if not panel_traces:
+                continue
+
+            row_idx = len(row_specs) + 1
+            for t in panel_traces:
+                t["xaxis"] = _trace_axis_name("x", row_idx)
+                t["yaxis"] = _trace_axis_name("y", row_idx)
+                traces.append(t)
+            row_specs.append({"y_title": y_title})
+            row_titles.append(panel_title)
+
+    row_count = len(row_specs)
+    gap = 0.04 if row_count > 1 else 0.0
+    usable = max(0.1, 1.0 - gap * (row_count - 1))
+    panel_height = usable / row_count
+
+    layout: Dict[str, Any] = {
+        "height": max(560, 230 * row_count),
+        "margin": {"l": 68, "r": 68, "t": 96, "b": 64},
+        "paper_bgcolor": "rgba(0,0,0,0)",
+        "plot_bgcolor": "rgba(7,10,16,.45)",
+        "font": {"color": "#dbeafe"},
+        "legend": {"orientation": "h", "y": 1.06, "x": 0},
+        "hovermode": "closest",
+    }
+
+    annotations: List[Dict[str, Any]] = []
+    for idx, spec in enumerate(row_specs):
+        top = 1.0 - idx * (panel_height + gap)
+        bottom = top - panel_height
+
+        xaxis_key = "xaxis" if idx == 0 else f"xaxis{idx + 1}"
+        yaxis_key = "yaxis" if idx == 0 else f"yaxis{idx + 1}"
+        show_bottom_ticks = (idx == row_count - 1)
+
+        layout[xaxis_key] = {
+            "title": x_col if show_bottom_ticks else "",
+            "domain": [0.0, 1.0],
+            "anchor": _trace_axis_name("y", idx + 1),
+            "gridcolor": "rgba(29,42,85,.45)",
+            "zerolinecolor": "rgba(29,42,85,.45)",
+            "showticklabels": show_bottom_ticks,
+            "automargin": True,
+        }
+        layout[yaxis_key] = {
+            "title": spec["y_title"],
+            "domain": [max(0.0, bottom), min(1.0, top)],
+            "anchor": _trace_axis_name("x", idx + 1),
+            "gridcolor": "rgba(29,42,85,.45)",
+            "zerolinecolor": "rgba(29,42,85,.45)",
+            "rangemode": "tozero",
+            "automargin": True,
+        }
+
+        annotations.append({
+            "text": row_titles[idx],
+            "xref": "paper",
+            "yref": "paper",
+            "x": 0.0,
+            "y": min(1.0, top + 0.012),
+            "xanchor": "left",
+            "yanchor": "bottom",
+            "showarrow": False,
+            "font": {"size": 12, "color": "#dbeafe"},
+        })
+
+    if annotations:
+        layout["annotations"] = annotations
+
+    config = {
+        "responsive": True,
+        "displaylogo": False,
+        "modeBarButtonsToRemove": ["lasso2d"],
+    }
+    return {
+        "data": traces,
+        "layout": layout,
+        "config": config,
+        "meta": {
+            "point_count": len(y_vals),
+            "sample_n": sample_n,
+            "x_col": x_col,
+            "y_col": y_col,
+            "panel_count": row_count,
+        },
+    }
+
+
+def _build_instability_view_payload(df: pd.DataFrame, request: InstabilityBaseRequest) -> Dict[str, Any]:
+    payload = het_instability.compute_instability_payload(
+        df,
+        request.x_col,
+        request.y_col,
+        layers=request.layers,
+        extra=request.ret,
+    )
+    plotly_payload = _build_instability_plotly_payload(
+        df=df,
+        payload=payload,
+        x_col=request.x_col,
+        y_col=request.y_col,
+        extra=request.ret,
+    )
+    if isinstance(plotly_payload, dict):
+        payload["plotly"] = plotly_payload
+    return payload
+
+
 @app.post("/instability/compute")
 async def instability_compute(request: InstabilityComputeRequest):
     """
@@ -1423,13 +2169,7 @@ async def instability_compute(request: InstabilityComputeRequest):
     """
     try:
         df = load_data(request.filePath, request.sheet)
-        payload = het_instability.compute_instability_payload(
-            df,
-            request.x_col,
-            request.y_col,
-            layers=request.layers,
-            extra=request.ret,
-        )
+        payload = _build_instability_view_payload(df, request)
         return {
             "success": True,
             "message": "不穩定度計算（骨架）",
@@ -1437,7 +2177,7 @@ async def instability_compute(request: InstabilityComputeRequest):
             "x_col": request.x_col,
             "y_col": request.y_col,
             "layers": request.layers,
-            "res": safe_serialize(payload),
+            "res": safe_serialize(payload, max_depth=8),
         }
     except Exception as e:
         LOGger.exception_process(e, logfile='', stamps=['instability_compute'])
@@ -1459,11 +2199,17 @@ async def instability_save(request: InstabilitySaveRequest):
             layers=request.layers,
             extra=request.ret,
         )
+        view_payload = _build_instability_view_payload(df, request)
+        saved["layers_table_preview"] = view_payload.get("layers_table_preview", [])
+        saved["layer_columns"] = view_payload.get("layer_columns", [])
+        saved["notes"] = view_payload.get("notes", [])
+        if isinstance(view_payload.get("plotly"), dict):
+            saved["plotly"] = view_payload["plotly"]
         return {
             "success": True,
             "message": "不穩定度存檔（骨架）",
             "output_dir": out_dir,
-            "res": safe_serialize(saved),
+            "res": safe_serialize(saved, max_depth=8),
         }
     except Exception as e:
         LOGger.exception_process(e, logfile='', stamps=['instability_save'])
@@ -1484,11 +2230,17 @@ async def instability_plot(request: InstabilityPlotRequest):
             layers=request.layers,
             extra=request.ret,
         )
+        view_payload = _build_instability_view_payload(df, request)
+        plotted["layers_table_preview"] = view_payload.get("layers_table_preview", [])
+        plotted["layer_columns"] = view_payload.get("layer_columns", [])
+        plotted["notes"] = view_payload.get("notes", [])
+        if isinstance(view_payload.get("plotly"), dict):
+            plotted["plotly"] = view_payload["plotly"]
         return {
             "success": True,
             "message": "不穩定度繪圖（骨架）",
             "output_dir": out_dir,
-            "res": safe_serialize(plotted),
+            "res": safe_serialize(plotted, max_depth=8),
         }
     except Exception as e:
         LOGger.exception_process(e, logfile='', stamps=['instability_plot'])

@@ -67,7 +67,9 @@ python start_server.py
 
 - **POST** `/data-parsing`
 - **POST** `/dppc`
-- **POST** `/plot-correlation`
+- **POST** `/plot-correlation`（非阻塞佇列：回 `job_id`；每任務獨立子目錄 + `job.json`；`n_jobs` 可選；可選 `spill_to_disk` / `spill_backend`（目前 `pkl`）/ `spill_keep_files`：MIC 前欄位分檔至 `.../spill/`，MIC 後還原繪圖，預設結束刪 spill 目錄）
+- **GET** `/plot-correlation/status/{job_id}`、`GET` `/plot-correlation/jobs`
+- **POST** `/plot-correlation/jobs/{job_id}/cancel`
 - **POST** `/calculate-correlation`
 
 ### 4.4 單變數對單變數分析
@@ -163,6 +165,9 @@ python start_server.py
 - `x_col`、`y_col`（必填）
 - `layers`（可選）
 - `output_dir`（`save` / `plot` 可選；未給時走服務預設路徑）
+- `ret.plotly_sample_n`（可選，預設 `3000`）：後端產生 Plotly 點數抽樣上限
+- `ret.plotly_seed`（可選，預設 `7`）：後端 Plotly 抽樣隨機種子
+- 回應 `res.plotly`：由後端直接給 `data/layout/config/meta`，可直接餵給 Plotly 前端渲染
 
 ### 5.7 `/evaluationPlanTask`
 
@@ -233,4 +238,3 @@ curl -X POST "http://10.1.3.127:6030/file/preview" \
 
 3. **中文亂碼**
    - 請確認檔案與編輯器都使用 UTF-8，並避免以 ANSI/Big5 另存覆蓋。
-

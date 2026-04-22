@@ -204,20 +204,48 @@ def plot_correlation(
     exp_fd: str = "micCorr",
     stamps: Optional[List[str]] = None,
     data_config_file: Optional[str] = None,
+    async_job: bool = True,
+    timeout_sec: Optional[float] = None,
+    n_jobs: Optional[int] = None,
+    is_aggregate: bool = False,
+    spill_to_disk: bool = False,
+    spill_backend: str = "pkl",
+    spill_keep_files: bool = False,
 ) -> Dict[str, Any]:
-    """呼叫 /plot-correlation 產生相關性圖。"""
+    """呼叫 /plot-correlation 產生相關性圖。預設非阻塞：回傳 job_id；async_job=False 則同步等完成。"""
     payload: Dict[str, Any] = {
         "filePath": file_path,
         "sheet": sheet,
         "method": method,
         "exp_fd": exp_fd,
         "ret": {},
+        "async_job": async_job,
+        "spill_to_disk": spill_to_disk,
+        "spill_backend": spill_backend,
+        "spill_keep_files": spill_keep_files,
     }
     if stamps is not None:
         payload["stamps"] = stamps
     if data_config_file:
         payload["data_config_file"] = data_config_file
+    if timeout_sec is not None:
+        payload["timeout_sec"] = timeout_sec
+    if n_jobs is not None:
+        payload["n_jobs"] = n_jobs
+    payload["isAggregate"] = bool(is_aggregate)
     return _post("/plot-correlation", payload)
+
+
+@mcp.tool()
+def plot_correlation_status(job_id: str) -> Dict[str, Any]:
+    """查詢 /plot-correlation 背景任務狀態與 output_files。"""
+    return _get(f"/plot-correlation/status/{job_id}")
+
+
+@mcp.tool()
+def plot_correlation_cancel(job_id: str) -> Dict[str, Any]:
+    """中止 /plot-correlation 背景任務（最佳努力）。"""
+    return _post(f"/plot-correlation/jobs/{job_id}/cancel", {})
 
 
 @mcp.tool()
@@ -470,8 +498,12 @@ def standard_tests(
     use_api: bool = False,
     plan_id: Optional[str] = None,
     seq_no: Optional[str] = None,
+    tol: Optional[float] = None,
+    spec_mode: str = "tost",
+    confidence: float = 0.95,
+    p_adjust: str = "holm",
 ) -> Dict[str, Any]:
-    """執行標準檢定分析。"""
+    """執行標準檢定分析。tol 有值時一併傳規格參數至 /standard-tests（issues/檢定容入規格判斷.iss）。"""
     payload: Dict[str, Any] = {
         "filePath": file_path,
         "sheet": sheet,
@@ -487,6 +519,11 @@ def standard_tests(
         payload["plan_id"] = plan_id
     if seq_no is not None:
         payload["seq_no"] = seq_no
+    if tol is not None:
+        payload["tol"] = tol
+        payload["spec_mode"] = spec_mode
+        payload["confidence"] = confidence
+        payload["p_adjust"] = p_adjust
     return _post("/standard-tests", payload)
 
 

@@ -56,6 +56,7 @@ def DataParsing(data, dataClassAsgin=None, stamps=None, selectHeader=None, **kwa
     return df, dfInfo
 
 def PlotCorrelation(matrix, method='mic', exp_fd=os.path.join('micCorr'), stamps=None, ret=None, **kwargs):
+    """MIC 熱圖；kwargs 可含 job API、spill_to_disk、spill_backend、spill_keep_files 等。"""
     if(not ds.plotCorrelation(matrix, stamps=stamps, handler=None, exp_fd=exp_fd, file=None, numColor=None, mask=None, height=5, ret=ret, **kwargs)):
         return False
     return True
@@ -217,7 +218,15 @@ def standardTests(handler, **kwargs):
         for name, group_data in data.groupby(handler.group_by)[handler.column]:
             grouped_data[str(name)] = group_data
         
-        results['group_comparison'] = DT.perform_group_comparison_tests(grouped_data, handler.alpha)
+        # 規格參數見 issues/檢定容入規格判斷.iss；tol 為 None 時 distribution_test 內不啟用 spec
+        results['group_comparison'] = DT.perform_group_comparison_tests(
+            grouped_data,
+            handler.alpha,
+            tol=getattr(handler, 'tol', None),
+            spec_mode=getattr(handler, 'spec_mode', 'tost'),
+            confidence=getattr(handler, 'confidence', 0.95),
+            p_adjust=getattr(handler, 'p_adjust', 'holm'),
+        )
     
     # 創建圖表
     print("生成分布圖表...")

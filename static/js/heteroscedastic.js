@@ -13,6 +13,13 @@ const state = {
   preview: null,
   picks: { x: null, y: null },
   lastResponse: null,
+  plotlySpec: null,
+  isRunning: false,
+  busyTimer: null,
+  busyStartedAt: 0,
+  jsonExpanded: false,
+  resolvedXCols: [],
+  resolvedYCol: null,
 };
 
 function escapeHtml(s){
@@ -38,6 +45,54 @@ function setApiStatus(ok){
   const dot = $('#apiStatus');
   dot.classList.remove('ok','bad');
   dot.classList.add(ok ? 'ok' : 'bad');
+}
+
+function setActionButtonsDisabled(disabled){
+  const ids = ['btnCompute', 'btnSave', 'btnPlot'];
+  for(const id of ids){
+    const el = document.getElementById(id);
+    if(el) el.disabled = !!disabled;
+  }
+}
+
+function setResultBusy(isBusy, text='計算中...'){
+  const mask = $('#resultBusyMask');
+  const label = $('#resultBusyText');
+  const elapsed = $('#resultBusyElapsed');
+  if(!mask) return;
+  if(isBusy){
+    if(label) label.textContent = text;
+    state.busyStartedAt = Date.now();
+    if(elapsed) elapsed.textContent = '0.0s';
+    if(state.busyTimer){
+      clearInterval(state.busyTimer);
+      state.busyTimer = null;
+    }
+    state.busyTimer = setInterval(()=>{
+      if(!elapsed) return;
+      const sec = Math.max(0, (Date.now() - state.busyStartedAt) / 1000);
+      elapsed.textContent = `${sec.toFixed(1)}s`;
+    }, 100);
+    mask.classList.add('show');
+    mask.setAttribute('aria-hidden', 'false');
+    return;
+  }
+
+  if(state.busyTimer){
+    clearInterval(state.busyTimer);
+    state.busyTimer = null;
+  }
+  if(elapsed) elapsed.textContent = '0.0s';
+  mask.classList.remove('show');
+  mask.setAttribute('aria-hidden', 'true');
+}
+
+function setJsonExpanded(expanded){
+  state.jsonExpanded = !!expanded;
+  const section = $('#jsonSection');
+  const btn = $('#btnToggleJson');
+  if(section) section.classList.toggle('collapsed', !state.jsonExpanded);
+  if(btn) btn.textContent = state.jsonExpanded ? '收合 JSON' : '顯示 JSON';
 }
 
 async function api(path, opts={}){
@@ -151,41 +206,165 @@ function fuzzyRank(cols, q){
     .sort((a,b)=>b.score-a.score);
 }
 
-function chipHTML(col, extra=''){
-  const meta = `${col.dtype} · uniq=${col.unique_count} · nn=${col.non_null_count}`;
-  return `
-    <div class="chip ${extra}" data-col="${escapeHtml(col.name)}">
-      <span class="mono">${escapeHtml(col.name)}</span>
-      <span class="meta mono">${escapeHtml(meta)}</span>
-    </div>
-  `;
+function colMetaText(col){
+  return `${col.dtype} · uniq=${col.unique_count} · nn=${col.non_null_count}`;
 }
 
-function setPicker(el, colName){
-  const col = state.columns.find(c => c.name === colName);
-  if(!col) return;
-  el.innerHTML = chipHTML(col, 'active');
-  el.dataset.value = colName;
+function colOptionText(col){
+  return `${col.name} ｜ ${colMetaText(col)}`;
+}
+
+function renderPickMeta(key){
+  const metaMap = { x: $('#xMeta'), y: $('#yMeta') };
+  const picked = state.columns.find(c => c.name === state.picks[key]);
+  if(!metaMap[key]) return;
+  if(!picked){
+    metaMap[key].textContent = '尚未選擇';
+    return;
+  }
+  metaMap[key].textContent = colMetaText(picked);
 }
 
 function applyPick(key, colName){
-  state.picks[key] = colName;
-  const map = { x: $('#xPicker'), y: $('#yPicker') };
-  setPicker(map[key], colName);
+  state.picks[key] = colName || null;
+  renderPickMeta(key);
+}
+
+function parseResolvedXCols(value){
+  if(Array.isArray(value)){
+    return [...new Set(value
+      .flatMap(v => String(v ?? '').split(','))
+      .map(v => v.trim())
+      .filter(Boolean))];
+  }
+  if(typeof value === 'string'){
+    return [...new Set(value.split(',').map(v => v.trim()).filter(Boolean))];
+  }
+  return [];
+}
+
+function parseResolvedYCol(value){
+  if(Array.isArray(value)){
+    const first = value.map(v => String(v ?? '').trim()).find(Boolean);
+    return first || null;
+  }
+  if(typeof value === 'string'){
+    const first = value.split(',').map(v => v.trim()).find(Boolean);
+    return first || null;
+  }
+  return null;
+}
+
+function applyResolvedPicksIfPossible(){
+  if(!state.columns.length) return false;
+  if(!state.resolvedYCol && state.resolvedXCols.length === 0) return false;
+
+  const colSet = new Set(state.columns.map(c => c.name));
+  const yCandidate = state.resolvedYCol && colSet.has(state.resolvedYCol)
+    ? state.resolvedYCol
+    : null;
+  const xCandidate = state.resolvedXCols.find(x => colSet.has(x) && x !== yCandidate) || null;
+
+  let changed = false;
+  if(yCandidate && state.picks.y !== yCandidate){
+    state.picks.y = yCandidate;
+    changed = true;
+  }
+  if(xCandidate && state.picks.x !== xCandidate){
+    state.picks.x = xCandidate;
+    changed = true;
+  }
+  if(changed){
+    state.resolvedXCols = [];
+    state.resolvedYCol = null;
+  }
+  return changed;
+}
+
+function rankColumnsForPicker(intent, query=''){
+  const normalizedQuery = String(query || '').trim();
+  const byQuery = fuzzyRank(state.columns, normalizedQuery);
+  let ranked = [];
+
+  if(normalizedQuery){
+    ranked = byQuery
+      .filter(item => item.score > 0)
+      .sort((a,b)=>{
+        if(a.score !== b.score) return b.score - a.score;
+        return scoreColumn(b.col, intent) - scoreColumn(a.col, intent);
+      })
+      .map(item => item.col);
+  }else{
+    ranked = [...state.columns].sort((a,b)=>scoreColumn(b, intent)-scoreColumn(a, intent));
+  }
+
+  const selectedName = state.picks[intent];
+  if(selectedName){
+    const selectedCol = state.columns.find(c => c.name === selectedName);
+    if(selectedCol){
+      ranked = [selectedCol, ...ranked.filter(c => c.name !== selectedName)];
+    }
+  }
+  return ranked;
+}
+
+function renderPicker(targetEl, intent, cols){
+  targetEl.innerHTML = '';
+  if(!cols.length){
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '（無可用欄位）';
+    targetEl.appendChild(opt);
+    targetEl.disabled = true;
+    if(state.picks[intent]){
+      state.picks[intent] = null;
+      renderPickMeta(intent);
+    }
+    return;
+  }
+
+  targetEl.disabled = false;
+  for(const col of cols){
+    const opt = document.createElement('option');
+    opt.value = col.name;
+    opt.textContent = colOptionText(col);
+    targetEl.appendChild(opt);
+  }
+
+  const selected = state.picks[intent];
+  const hasSelected = cols.some(c => c.name === selected);
+  if(hasSelected){
+    targetEl.value = selected;
+  }else{
+    targetEl.value = cols[0].name;
+    state.picks[intent] = cols[0].name;
+  }
+  renderPickMeta(intent);
 }
 
 function renderPickers(query=''){
-  const ranked = fuzzyRank(state.columns, query).map(x => x.col);
-  const topX = [...ranked].sort((a,b)=>scoreColumn(b,'x')-scoreColumn(a,'x')).slice(0,8);
-  const topY = [...ranked].sort((a,b)=>scoreColumn(b,'y')-scoreColumn(a,'y')).slice(0,8);
+  const maxItems = 400;
+  const rankedX = rankColumnsForPicker('x', query).slice(0, maxItems);
+  const rankedY = rankColumnsForPicker('y', query).slice(0, maxItems);
+  renderPicker($('#xPicker'), 'x', rankedX);
+  renderPicker($('#yPicker'), 'y', rankedY);
+}
 
-  if(!$('#xPicker').dataset.value){
-    $('#xPicker').innerHTML = topX.map(c=>chipHTML(c,'suggest')).join('');
-    $('#xPicker').querySelectorAll('.chip').forEach(el=>el.addEventListener('click', ()=>applyPick('x', el.dataset.col)));
+function ensureValidPicks(){
+  const rankedX = [...state.columns].sort((a,b)=>scoreColumn(b,'x')-scoreColumn(a,'x'));
+  const rankedY = [...state.columns].sort((a,b)=>scoreColumn(b,'y')-scoreColumn(a,'y'));
+  const hasX = rankedX.some(c => c.name === state.picks.x);
+  const hasY = rankedY.some(c => c.name === state.picks.y);
+
+  if(!hasX){
+    state.picks.x = rankedX[0]?.name || null;
   }
-  if(!$('#yPicker').dataset.value){
-    $('#yPicker').innerHTML = topY.map(c=>chipHTML(c,'suggest')).join('');
-    $('#yPicker').querySelectorAll('.chip').forEach(el=>el.addEventListener('click', ()=>applyPick('y', el.dataset.col)));
+  if(!hasY){
+    state.picks.y = rankedY[0]?.name || null;
+  }
+  if(state.picks.x && state.picks.y && state.picks.x === state.picks.y && rankedY.length > 1){
+    const altY = rankedY.find(c => c.name !== state.picks.x);
+    if(altY) state.picks.y = altY.name;
   }
 }
 
@@ -252,6 +431,137 @@ function renderPaths(data){
       <div class="mono">${escapeHtml(it.value)}</div>
     </div>
   `).join('');
+}
+
+function normalizePlotlySpec(runData){
+  const plotly = runData?.res?.plotly;
+  if(!plotly || typeof plotly !== 'object') return null;
+  if(!Array.isArray(plotly.data) || plotly.data.length === 0) return null;
+  return {
+    data: plotly.data,
+    layout: (plotly.layout && typeof plotly.layout === 'object') ? plotly.layout : {},
+    config: (plotly.config && typeof plotly.config === 'object') ? plotly.config : {},
+    meta: (plotly.meta && typeof plotly.meta === 'object') ? plotly.meta : {},
+  };
+}
+
+function clearInteractivePlot(message='尚無互動圖資料'){
+  const wrap = $('#plotlyWrap');
+  if(!wrap) return;
+  if(typeof Plotly !== 'undefined'){
+    try{ Plotly.purge(wrap); }catch(e){}
+  }
+  wrap.className = 'plotly-wrap empty-hint';
+  wrap.textContent = message;
+  const meta = $('#plotlyMeta');
+  if(meta) meta.textContent = message;
+  state.plotlySpec = null;
+}
+
+// async function renderInteractivePlot(runData){
+//   const wrap = $('#plotlyWrap');
+//   const meta = $('#plotlyMeta');
+//   if(!wrap || !meta) return;
+//   if(typeof Plotly === 'undefined'){
+//     clearInteractivePlot('Plotly 未載入');
+//     return;
+//   }
+
+//   const spec = normalizePlotlySpec(runData);
+//   if(!spec){
+//     clearInteractivePlot('後端未提供 plotly JSON');
+//     return;
+//   }
+
+//   state.plotlySpec = spec;
+//   wrap.className = 'plotly-wrap';
+//   wrap.innerHTML = '';
+//   await Plotly.newPlot(wrap, state.plotlySpec.data, state.plotlySpec.layout, state.plotlySpec.config);
+//   const points = Number(state.plotlySpec.meta?.point_count || 0);
+//   const sampled = Number(state.plotlySpec.meta?.sample_n || 0);
+//   meta.textContent = points > 0 ? `互動圖資料點: ${points}（sample_n=${sampled || '-'})` : '互動圖已載入';
+// }
+
+let heteroPlotResizeTimer = null;
+function scheduleHeteroPlotlyResize(){
+  const wrap = document.getElementById('plotlyWrap');
+  if(!wrap || wrap.classList.contains('empty-hint')) return;
+  if(typeof Plotly === 'undefined') return;
+  if(heteroPlotResizeTimer) clearTimeout(heteroPlotResizeTimer);
+  heteroPlotResizeTimer = setTimeout(()=>{
+    heteroPlotResizeTimer = null;
+    try{
+      Plotly.Plots.resize(wrap);
+    }catch(_){}
+  }, 120);
+}
+
+async function renderInteractivePlot(runData){
+  const wrap = $('#plotlyWrap');
+  const meta = $('#plotlyMeta');
+  if(!wrap || !meta) return;
+  if(typeof Plotly === 'undefined'){
+    clearInteractivePlot('Plotly 未載入');
+    return;
+  }
+
+  const spec = normalizePlotlySpec(runData);
+  if(!spec){
+    clearInteractivePlot('後端未提供 plotly JSON');
+    return;
+  }
+
+  state.plotlySpec = spec;
+  wrap.className = 'plotly-wrap';
+  wrap.innerHTML = '';
+
+  const oldLayout = { ...(state.plotlySpec.layout || {}) };
+  delete oldLayout.height;
+  delete oldLayout.width;
+  const oldMargin = oldLayout.margin || {};
+
+  state.plotlySpec.layout = {
+    ...oldLayout,
+    autosize: true,
+    margin: {
+      l: Math.max(70, oldMargin.l || 0),
+      r: Math.max(56, oldMargin.r || 0),
+      t: Math.max(72, oldMargin.t || 0),
+      b: Math.max(70, oldMargin.b || 0),
+    },
+    legend: {
+      orientation: 'h',
+      yanchor: 'bottom',
+      y: 1.02,
+      xanchor: 'left',
+      x: 0
+    }
+  };
+
+  state.plotlySpec.config = {
+    responsive: true,
+    displayModeBar: true,
+    scrollZoom: true,
+    ...state.plotlySpec.config
+  };
+
+  await Plotly.newPlot(
+    wrap,
+    state.plotlySpec.data,
+    state.plotlySpec.layout,
+    state.plotlySpec.config
+  );
+
+  requestAnimationFrame(() => {
+    try{
+      Plotly.Plots.resize(wrap);
+    }catch(_){}
+    scheduleHeteroPlotlyResize();
+  });
+
+  const points = Number(state.plotlySpec.meta?.point_count || 0);
+  const sampled = Number(state.plotlySpec.meta?.sample_n || 0);
+  meta.textContent = points > 0 ? `互動圖資料點: ${points}（sample_n=${sampled || '-'})` : '互動圖已載入';
 }
 
 function renderSummary(data, mode){
@@ -422,12 +732,13 @@ async function previewFile(){
     state.columns = j.columns || [];
     $('#previewMeta').textContent = `${j.file_type} · ${j.shape?.rows || 0} x ${j.shape?.columns || 0}`;
     renderPreviewTable(j);
-
-    const rankedX = [...state.columns].sort((a,b)=>scoreColumn(b,'x')-scoreColumn(a,'x'));
-    const rankedY = [...state.columns].sort((a,b)=>scoreColumn(b,'y')-scoreColumn(a,'y'));
-    if(!state.picks.x && rankedX[0]) applyPick('x', rankedX[0].name);
-    if(!state.picks.y && rankedY[0]) applyPick('y', rankedY[0].name);
+    ensureValidPicks();
+    const autoApplied = applyResolvedPicksIfPossible();
     renderPickers($('#colSearch').value);
+    if(autoApplied){
+      log(`已依設定帶入 x / y：${state.picks.x} / ${state.picks.y}`);
+    }
+    clearInteractivePlot('請先執行 Compute / Plot');
     log(`Preview ok: columns=${state.columns.length}`);
   }catch(e){
     log(`預覽失敗: ${e.message}`);
@@ -435,6 +746,13 @@ async function previewFile(){
 }
 
 async function runMode(mode){
+  if(state.isRunning){
+    log('已有計算執行中，請稍候');
+    return;
+  }
+  state.isRunning = true;
+  setActionButtonsDisabled(true);
+  setResultBusy(true, `${mode.toUpperCase()} 計算中...`);
   try{
     const body = buildRequestBody(mode);
     const endpoint = mode === 'compute' ? '/instability/compute' : mode === 'save' ? '/instability/save' : '/instability/plot';
@@ -444,11 +762,55 @@ async function runMode(mode){
       body: JSON.stringify(body)
     });
     renderResponse(j, mode);
+    try{
+      await renderInteractivePlot(j);
+    }catch(plotErr){
+      clearInteractivePlot(`互動圖載入失敗: ${plotErr.message}`);
+      log(`Plotly render failed: ${plotErr.message}`);
+    }
     log(`${mode.toUpperCase()} 完成`);
   }catch(e){
     const msg = `${mode.toUpperCase()} 失敗: ${e.message}`;
     $('#jsonOut').textContent = JSON.stringify({ success:false, message: msg }, null, 2);
+    clearInteractivePlot(msg);
     log(msg);
+  }finally{
+    state.isRunning = false;
+    setActionButtonsDisabled(false);
+    setResultBusy(false);
+  }
+}
+
+async function tryResolveXyFromConfig(){
+  try{
+    const base = (state.apiBase || '').replace(/\/+$/, '');
+    const params = new URLSearchParams(window.location.search || '');
+    const query = new URLSearchParams();
+    for(const key of ['config_path', 'default_data_path', 'model_config_path']){
+      const value = String(params.get(key) || '').trim();
+      if(value) query.set(key, value);
+    }
+    const url = query.size
+      ? `${base}/config/resolve-xy?${query.toString()}`
+      : `${base}/config/resolve-xy`;
+    const r = await fetch(url);
+    if(!r.ok) return;
+    const j = await r.json();
+    if(!j || j.success === false || j.implemented === false) return;
+
+    state.resolvedXCols = parseResolvedXCols(j.x_cols);
+    state.resolvedYCol = parseResolvedYCol(j.y_col);
+
+    if(!state.selectedFile && typeof j.input_file === 'string' && j.input_file.trim()){
+      state.selectedFile = j.input_file.trim();
+    }
+
+    if(applyResolvedPicksIfPossible()){
+      renderPickers($('#colSearch').value);
+      log(`已依設定帶入 x / y：${state.picks.x} / ${state.picks.y}`);
+    }
+  }catch(_){
+    /* 保持相容：無 API 或錯誤時略過 */
   }
 }
 
@@ -472,9 +834,12 @@ function init(){
   });
   $('#fileSelect').addEventListener('change', applyBrowseSelection);
   $('#btnPreview').addEventListener('click', previewFile);
+  $('#xPicker').addEventListener('change', (e)=>applyPick('x', e.target.value));
+  $('#yPicker').addEventListener('change', (e)=>applyPick('y', e.target.value));
   $('#btnCompute').addEventListener('click', ()=>runMode('compute'));
   $('#btnSave').addEventListener('click', ()=>runMode('save'));
   $('#btnPlot').addEventListener('click', ()=>runMode('plot'));
+  $('#btnToggleJson').addEventListener('click', ()=>setJsonExpanded(!state.jsonExpanded));
   $('#btnCopyJson').addEventListener('click', async ()=>{
     try{
       await navigator.clipboard.writeText($('#jsonOut').textContent);
@@ -484,17 +849,18 @@ function init(){
     }
   });
   $('#colSearch').addEventListener('input', ()=>{
-    $('#xPicker').dataset.value = state.picks.x || '';
-    $('#yPicker').dataset.value = state.picks.y || '';
-    if(!state.picks.x) $('#xPicker').innerHTML = '';
-    if(!state.picks.y) $('#yPicker').innerHTML = '';
     renderPickers($('#colSearch').value);
-    if(state.picks.x) setPicker($('#xPicker'), state.picks.x);
-    if(state.picks.y) setPicker($('#yPicker'), state.picks.y);
   });
 
+  setJsonExpanded(false);
+  clearInteractivePlot('請先讀取欄位並執行 Compute / Plot');
+  if(!window.__heteroPlotResizeBound){
+    window.__heteroPlotResizeBound = true;
+    window.addEventListener('resize', scheduleHeteroPlotlyResize);
+  }
   ping();
   refreshFiles();
+  tryResolveXyFromConfig();
 }
 
 init();
